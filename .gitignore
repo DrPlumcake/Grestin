@@ -5,3 +5,7 @@ __pycache__/
 evidence/
 out/
 .DS_Store
+*.egg-info/
+__pycache__/
+evidence/
+out/
