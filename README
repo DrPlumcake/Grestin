@@ -1,1 +1,133 @@
-.venv\Scripts\Activate.ps1 
+# Grestin
+
+A passive Cyber Threat Intelligence layer that feeds the **Phase 1 driver matrix**
+of the 5G TPRM process. Three pillars (technical, corporate, incident) converge on
+one hub: the weighted driver questionnaire of the *Third Parties Risk Evaluation
+Tool v2.0*.
+
+## Quickstart
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+cp .env.example .env        # then fill in the two API keys when you need them
+
+# 1. the passivity policy, enforced by code
+pytest tests/test_passive_guard.py -v
+grestin guard --url "https://api.shodan.io/shodan/scan?ips=1.2.3.4"   # BLOCKED
+grestin guard --url "https://crt.sh/?q=example.com"                    # ALLOWED
+
+# 2. driver coverage: what the layer can and cannot reach
+grestin coverage
+
+# 3. a full run, replayed from stored evidence (no network, no API keys)
+python tools/seed_demo_evidence.py DEMO
+grestin run --target config/targets_example.yaml --offline --run-id DEMO
+
+# 4. the same run, pre-filling a copy of the driver matrix
+grestin run --target config/targets_example.yaml --offline --run-id DEMO \
+             --prefill "/path/to/Third Parties Risk Evaluation Tool v2.0.xlsx"
+
+# 5. live run against a real target
+grestin run --target config/targets/<supplier>.yaml
+```
+
+Outputs land in `out/<slug>-<run_id>/`: `findings.json`, `raws.json`,
+`verdicts.json`, `risk_assessment_report.md`, `stats.json`,
+`handoff_hosts.json`, and the pre-filled workbook. Raw HTTP responses live in
+`evidence/<run_id>/` with an append-only `index.jsonl`.
+
+## Dependencies
+
+The code imports five packages: `httpx`, `pyyaml`, `jinja2`, `openpyxl`,
+`python-dotenv`. Four from the original list were dropped, each for a reason
+that is easy to reverse:
+
+| Package | Why it is not there | To bring it back |
+|---|---|---|
+| `pydantic` | `models.py` uses stdlib dataclasses. `Finding` needs ordinal comparison on `signal_strength` and a custom `__post_init__`, both of which are plainer without a validation framework, and the schema is already pinned by tests. | Swap the dataclasses for `BaseModel`; `to_dict()` becomes `model_dump()`. Half a day, no behavioural gain. |
+| `tenacity` | `PassiveClient` retries by hand because it needs to honour `Retry-After`, distinguish 429 from 502, and re-run `assert_passive()` on every redirect. A decorator would hide the guard. | Wrap only the socket call, leaving the guard outside the decorator. |
+| `rich` | The CLI prints plain text so that terminal output pastes cleanly into the thesis and into screenshots. | Useful for the live demo: a `rich.table` for `grestin coverage` would look good on a projector. |
+| `python-dotenv` | **Kept and wired**: `cli.main()` calls `load_dotenv()`, and `http.api_key()` reads from the environment. | - |
+
+## Layout
+
+```
+config/       drivers.yaml (13 drivers, weights, cells) | mapping.yaml | patterns.yaml
+src/grestin/
+  models.py   Finding (Table 6.1), Raw, Target, DriverVerdict, RunStats
+  config.py   loader + the only Finding factory (enforces strength ceilings)
+  http.py     PassiveClient: allowlist/denylist guard, cache, evidence store, replay
+  pillars/
+    base.py                 collect(target)->[Raw] ; analyze(raws)->[Finding]
+    technical/crtsh.py      stage 1 (done) -> dns -> shodan -> vulns
+    corporate/              opensanctions
+    incident/               ransomware_live
+  hub/
+    scoring.py  findings -> DriverVerdict (rules R1-R3)
+    prefill.py  writes verdicts into a copy of the tool + CTI Evidence sheet
+    report.py   Risk Assessment Report (Markdown)
+  cli.py      run | guard | coverage
+tools/        seed_demo_evidence.py
+```
+
+## Four invariants worth defending
+
+1. **Passivity is enforced, not promised.** Every request passes
+   `assert_passive()`: https + GET only, an explicit denylist of active
+   endpoints (each with its documented reason), then a prefix allowlist. New
+   tool = conscious edit. `tests/test_passive_guard.py` is the proof.
+2. **The layer never answers NO.** Verdicts are `SUGGEST_YES`, `REVIEW`,
+   `NOT_OBSERVABLE`. Absence of passive evidence is not evidence of
+   compliance, and the compiler of the tool keeps ownership of every cell.
+3. **Strength is capped per finding type** in `mapping.yaml`, so `strong` is
+   reachable only at the end of the technical chain (KEV on an exposed
+   service), on an exact sanctions identifier match, or on a leak-site listing
+   inside the 12-month window. No collector can promote its own output.
+4. **`collect` and `analyze` are separated.** `analyze` is pure, so every
+   finding is re-derivable from stored evidence with the network unplugged -
+   which is both the reproducibility argument and the demo insurance policy.
+
+## Reading and writing the workbook
+
+- Input cells are **`'Supply Risk Drivers'!G5:G17` only**. Column C of
+  *Driver Configuration* is derived (`C7` spills `='Supply Risk Drivers'!G7:G17`).
+- `'Driver Configuration'!G2` is an array formula using `_xlfn._xlws.FILTER`.
+  It survives an openpyxl round-trip, but **never recalculate the output with
+  LibreOffice** - it cannot evaluate a spilling array written by openpyxl and
+  will bake in `#NAME?`. Excel recalculates correctly on open; for a number
+  without Excel, read the `CTI Evidence` sheet, which is formula-free.
+- Every G cell carries a data validation list, so a written value must belong
+  to the driver's `answer_domain` in `drivers.yaml`.
+
+## Endpoint cheatsheet for the remaining stages
+
+All of these are already in the allowlist; none of them touches the supplier.
+
+| Stage | Endpoint | Notes |
+|---|---|---|
+| dns | (no HTTP) system resolver, A/AAAA/CNAME | passive-safe; no AXFR, no brute force. Document the resolver used. |
+| shodan | `https://internetdb.shodan.io/{ip}` | free, no key; ports, CPEs, hostnames, vulns |
+| shodan | `https://api.shodan.io/shodan/host/{ip}?key=$SHODAN_API_KEY` | richer; geolocation for the extra-EU driver |
+| cve meta | `https://cvedb.shodan.io/cve/{cve}` | KEV flag, EPSS, CVSS in one call |
+| nvd | `https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve}` | 5 req/30s without a key; ask for one |
+| kev | `https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json` | fetch once per run, cache, then look up locally |
+| epss | `https://api.first.org/data/v1/epss?cve={cve1},{cve2}` | batch up to ~100 CVEs per call |
+| opensanctions | `https://api.opensanctions.org/match/default` | needs a key; **POST** - see below |
+| ransomware.live | `https://api.ransomware.live/v2/searchvictims/{query}` | no key; check the current path before wiring |
+
+> **OpenSanctions and the GET-only rule.** The match endpoint is a POST. Do not
+> loosen `assert_passive`: add a narrowly scoped `post_json()` that calls
+> `assert_passive(url, "POST")` after adding an explicit
+> `POST_ALLOWED = ("https://api.opensanctions.org/match/",)` tuple, and say so
+> in the thesis. A POST that submits *our own* query payload to a sanctions
+> database is still passive with respect to the supplier; the point of the
+> guard is the target, not the verb. Keeping the exception explicit and tested
+> is what makes it defensible.
+
+## Statistics produced per run (`stats.json`)
+
+Hosts observed in CT, hosts handed to DNS, how many resolve, hosts with open
+ports, CVEs, KEV hits, findings per pillar, verdicts by class, HTTP calls,
+cache hits, per-stage timings, errors. This is the material for the evaluation
+chapter and for the screenshots.

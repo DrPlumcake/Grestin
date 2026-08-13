@@ -1,0 +1,195 @@
+# =============================================================================
+# finding_type -> (driver, strength ceiling, follow-up)
+#
+# Two rules that the code enforces (see hub/scoring.py):
+#   R1  A finding never asserts NO. Absence of passive evidence is
+#       NOT_OBSERVABLE, never a clean bill of health.
+#   R2  strength is capped per finding_type. A single tool cannot reach
+#       `strong` unless the ceiling says so; `strong` is earned by chaining
+#       inside the technical pillar or by cross-pillar corroboration.
+# =============================================================================
+
+verdict_rules:
+  suggest_yes_if:
+    any_finding_at: strong
+    or_moderate_with_corroboration: true    # >=2 findings, different sources
+  review_if:
+    any_finding_at: moderate
+    or_weak_count: 3
+  otherwise: not_observable
+  never_emit: ["NO"]
+
+finding_types:
+
+  # --- technical pillar: crt.sh (stage 1) ---------------------------------
+  subdomain_observed:
+    driver: vuln_exposure_mgmt
+    pillar: technical
+    strength_ceiling: info
+    followup: next_tool            # -> dns.resolve
+    rationale: >-
+      A certificate-transparency entry is an asset-inventory fact, not a
+      weakness. It is the anchor of the chain, so it is `info` by
+      construction. Maps to ID.AM-04 (external systems catalogued) even
+      though ID.AM-04 is not itself a weighted driver.
+
+  sensitive_hostname_observed:
+    driver: vuln_exposure_mgmt
+    pillar: technical
+    strength_ceiling: weak
+    followup: next_tool
+    rationale: >-
+      A hostname such as vpn-admin.* or jenkins.* discloses a management or
+      pre-production surface. On its own it is only naming evidence: the
+      host may not resolve, may be internal-only, or may be
+      decommissioned. Weak until DNS+Shodan confirm exposure.
+
+  surface_scale_anomaly:
+    driver: vuln_exposure_mgmt
+    pillar: technical
+    strength_ceiling: weak
+    followup: human_review
+    rationale: >-
+      A certificate surface far larger than the supplier's declared estate
+      is a dissonance with the self-declaration, addressed to the Security
+      function rather than to the next tool.
+
+  # --- technical pillar: DNS (stage 2) ------------------------------------
+  hostname_resolves:
+    driver: vuln_exposure_mgmt
+    pillar: technical
+    strength_ceiling: info
+    followup: next_tool            # -> shodan lookup on the IP
+  dangling_cname:
+    driver: vuln_exposure_mgmt
+    pillar: technical
+    strength_ceiling: moderate
+    followup: human_review
+    rationale: "Subdomain-takeover precondition, observable without touching the host."
+
+  # --- technical pillar: Shodan (stage 3, passive DB read) ----------------
+  open_service_observed:
+    driver: vuln_exposure_mgmt
+    pillar: technical
+    strength_ceiling: weak
+    followup: next_tool            # -> nvd/kev on the CPE/CVE list
+  management_service_exposed:
+    driver: vuln_exposure_mgmt
+    pillar: technical
+    strength_ceiling: moderate
+    followup: next_tool
+    rationale: "RDP/SMB/database/Kubernetes-API reachable from the Internet."
+  hosting_outside_eea:
+    driver: extra_eu_data
+    pillar: technical
+    strength_ceiling: moderate
+    followup: human_review         # -> question to the supplier, not a verdict
+    rationale: >-
+      Infrastructure location only. Never sufficient to conclude on the
+      lawfulness of a transfer (SCC / adequacy / BCR are documentary).
+
+  # --- technical pillar: vulnerability layer (stage 4) --------------------
+  cve_on_exposed_service:
+    driver: vuln_exposure_mgmt
+    pillar: technical
+    strength_ceiling: moderate
+    followup: none
+  kev_on_exposed_service:
+    driver: vuln_exposure_mgmt
+    pillar: technical
+    strength_ceiling: strong
+    followup: human_review
+    rationale: >-
+      End of the chain: a CVE in the CISA KEV catalogue, on a service
+      observed as exposed on a host attributed to the supplier. Actively
+      exploited in the wild -> the only single-pillar `strong`.
+  kev_ransomware_flag:
+    driver: vuln_exposure_mgmt
+    pillar: technical
+    strength_ceiling: strong
+    followup: human_review
+    corroborates: [dls_listing]    # cross-pillar convergence trigger
+  high_epss_on_exposed_service:
+    driver: vuln_exposure_mgmt
+    pillar: technical
+    strength_ceiling: moderate
+    followup: none
+    rationale: "EPSS >= 0.10 prioritises, it does not prove exploitation."
+
+  # --- OPTIONAL: gives crt.sh/DNS a second driver ------------------------
+  # Uncomment together with `cti_observable: true` on subsupplier_transparency
+  # in drivers.yaml, and with the CNAME collection in dns.py. Doing so raises
+  # the addressable weight from 0.38 to 0.44, but it contradicts the current
+  # Chapter 6.1 text, which lists passive DNS as a *future extension*. Pick one
+  # and be consistent: an inconsistency here is the easiest question to ask.
+  #
+  # nth_party_dependency_observed:
+  #   driver: subsupplier_transparency
+  #   pillar: technical
+  #   strength_ceiling: weak
+  #   followup: human_review
+  #   rationale: >-
+  #     A CNAME pointing at a third-party service domain, or a certificate SAN
+  #     shared with an unrelated organisation, discloses a downstream provider
+  #     the supplier may not have declared. Weak by construction: it evidences
+  #     the *existence* of a sub-processor, never the absence of vetting, which
+  #     is what the driver actually asks about.
+
+  # --- corporate pillar: OpenSanctions -----------------------------------
+  sanctions_match_exact:
+    driver: ownership_due_diligence
+    pillar: corporate
+    strength_ceiling: strong
+    followup: human_review         # -> Legal, always
+  sanctions_match_fuzzy:
+    driver: ownership_due_diligence
+    pillar: corporate
+    strength_ceiling: moderate
+    followup: human_review
+    rationale: "Name similarity is not identity. Never auto-accepted."
+  pep_match:
+    driver: ownership_due_diligence
+    pillar: corporate
+    strength_ceiling: moderate
+    followup: human_review
+  adverse_media_match:
+    driver: ownership_due_diligence
+    pillar: corporate
+    strength_ceiling: weak
+    followup: human_review
+  extra_eu_ownership_chain:
+    driver: ownership_due_diligence
+    pillar: corporate
+    strength_ceiling: moderate
+    followup: human_review
+    also_informs: [golden_power]   # secondary, weak by construction
+  golden_power_indicator:
+    driver: golden_power
+    pillar: corporate
+    strength_ceiling: weak
+    followup: human_review         # -> Legal determines scope
+    rationale: "CTI flags the FOCI element; scope under D.L. 21/2012 is a legal call."
+
+  # --- incident pillar: ransomware.live ----------------------------------
+  dls_listing:
+    driver: data_breach_12m
+    pillar: incident
+    strength_ceiling: strong
+    followup: human_review
+    rationale: >-
+      Leak-site appearance within 12 months with a domain match. Satisfies
+      the driver's own test ("public or formally communicated"), so it
+      reaches strong without chaining.
+    corroborates: [kev_ransomware_flag]
+  dls_listing_stale:
+    driver: data_breach_12m
+    pillar: incident
+    strength_ceiling: weak
+    followup: human_review
+    rationale: "Older than the 12-month window: context, outside the driver."
+  dls_listing_name_only:
+    driver: data_breach_12m
+    pillar: incident
+    strength_ceiling: moderate
+    followup: human_review
+    rationale: "Victim name matches but no domain confirmation: homonym risk."

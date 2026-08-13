@@ -1,0 +1,14 @@
+# One file per target. Keep the declared_* fields: the contribution of the
+# layer is the dissonance between declaration and observation, so a run
+# without declarations can only produce findings, not dissonances.
+legal_name: "Acme RAN S.p.A."
+country: IT
+domains:
+  - acme-ran.example
+aliases:
+  - "Acme RAN SpA"
+  - "Acme RAN"
+declared_hosts: 3              # from the supplier's Phase 2 asset statement
+declared_extra_eu: false
+declared_breach_12m: false
+notes: "5G RAN maintenance contract, remote access via VPN."

@@ -1,14 +1,24 @@
 [project]
 name = "grestin"
 version = "0.1.0"
+description = "Passive CTI layer feeding the Phase 1 driver matrix of a 5G TPRM process"
 requires-python = ">=3.11"
+
+# Only what the code actually imports. See "Dependencies" in the README for the
+# four packages dropped from the original list, and what it would take to use them.
 dependencies = [
-  "httpx", "pydantic", "pyyaml", "python-dotenv",
-  "jinja2", "rich", "openpyxl", "tenacity",
+  "httpx",          # http.py - the single network egress point
+  "pyyaml",         # config/*.yaml
+  "jinja2",         # hub/report.py
+  "openpyxl",       # hub/prefill.py - reads and writes the Excel tool
+  "python-dotenv",  # cli.py - loads SHODAN_API_KEY / OPENSANCTIONS_API_KEY from .env
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff"]
+dev = ["pytest", "pytest-cov", "ruff", "respx"]
+
+[project.scripts]
+grestin = "grestin.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -16,3 +26,20 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Without these two lines `pytest` from the repo root cannot import grestin
+# unless the package is installed; with them, both work.
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]

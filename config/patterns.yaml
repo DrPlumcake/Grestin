@@ -1,0 +1,53 @@
+# Heuristics used by the technical pillar. Kept in config so that Chapter 6
+# can state the exact rule set and a reviewer can reproduce it.
+
+# Matched as whole labels or as substrings of the leftmost labels of a
+# hostname. `category` ends up in the finding evidence, so the report can say
+# *why* a hostname was flagged.
+sensitive_hostnames:
+  remote_access:   [vpn, sslvpn, remote, rdp, rds, citrix, anyconnect, pulse, ivanti, globalprotect, ras, gateway]
+  administration:  [admin, adm, manage, mgmt, cpanel, whm, plesk, webmin, idrac, ilo, ipmi, bmc, console]
+  identity:        [sso, adfs, auth, login, saml, oauth, keycloak, ldap, radius, okta]
+  devops:          [jenkins, gitlab, gitea, bitbucket, nexus, artifactory, sonar, sonarqube, harbor, registry, argocd, rancher, k8s, kubernetes]
+  monitoring:      [grafana, kibana, prometheus, zabbix, nagios, elastic, splunk, graylog]
+  data:            [db, database, mysql, postgres, mongo, redis, oracle, mssql, phpmyadmin, adminer, pgadmin]
+  file_transfer:   [ftp, sftp, tftp, filetransfer, moveit, goanywhere, nextcloud, owncloud, sharefile]
+  non_production:  [dev, test, testing, qa, uat, stage, staging, preprod, sandbox, demo, poc, old, legacy, tmp, temp, backup, bak]
+  collaboration:   [jira, confluence, wiki, mail, webmail, owa, exchange, smtp, imap, zimbra, mattermost]
+  network_edge:    [fw, firewall, asa, fortigate, fortinet, pfsense, sonicwall, checkpoint, router, switch]
+
+# Ports that make `open_service_observed` become
+# `management_service_exposed` (see mapping.yaml).
+management_ports:
+  22:   ssh
+  23:   telnet
+  135:  msrpc
+  139:  netbios
+  445:  smb
+  1433: mssql
+  1521: oracle
+  3306: mysql
+  3389: rdp
+  5432: postgresql
+  5900: vnc
+  5985: winrm
+  6379: redis
+  9200: elasticsearch
+  11211: memcached
+  27017: mongodb
+  2375: docker-api
+  6443: kubernetes-api
+  10250: kubelet
+
+# EEA + adequacy decisions, used ONLY to decide whether to emit
+# `hosting_outside_eea`. Never used to conclude on lawfulness.
+eea_countries: [AT, BE, BG, HR, CY, CZ, DK, EE, FI, FR, DE, GR, HU, IE, IT, LV, LT, LU, MT, NL, PL, PT, RO, SK, SI, ES, SE, IS, LI, NO]
+adequacy_countries: [AD, AR, CA, FO, GG, IL, IM, JP, JE, NZ, KR, CH, GB, UY]
+
+# Thresholds, all named so the thesis can cite them.
+thresholds:
+  epss_high: 0.10          # FIRST's own "high priority" convention
+  cvss_high: 7.0
+  dls_window_days: 365     # driver text: "past 12 months"
+  crtsh_surface_anomaly_ratio: 3.0   # observed hosts / declared hosts
+  fuzzy_name_score: 0.75   # OpenSanctions match score floor

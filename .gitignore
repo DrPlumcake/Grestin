@@ -1,11 +1,17 @@
 .venv/
 __pycache__/
 *.pyc
-.env
-evidence/
-out/
-.DS_Store
 *.egg-info/
-__pycache__/
-evidence/
-out/
+.pytest_cache/
+.ruff_cache/
+.env
+.DS_Store
+
+# Keep the directories, ignore their contents: a run must not be committed,
+# but the layout must survive a clone (the CLI writes into them).
+evidence/*
+!evidence/.gitkeep
+out/*
+!out/.gitkeep
+
+tool/

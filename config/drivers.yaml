@@ -1,0 +1,237 @@
+# =============================================================================
+# Phase 1 driver matrix - single source of truth for the CTI layer.
+#
+# PROVENANCE: every id / weight / cell / answer_domain below was read
+# programmatically from `Third Parties Risk Evaluation Tool v2.0.xlsx`,
+# sheets "Driver Configuration" (B4:D17, F13:G17) and "Supply Risk Drivers"
+# (B4:G17, incl. data-validation lists). Do not hand-edit: if the tool
+# changes, re-run `grestin verify-drivers --tool <path>`, which diffs this
+# file against the workbook and fails on any drift.
+#
+# Scoring in the workbook:
+#   Supply Risk = SUM(weight WHERE answer == "YES") + weight(data_classification)
+#   ('Driver Configuration'!G2, an array formula using _xlfn._xlws.FILTER)
+# Higher score = higher inherent risk.
+# =============================================================================
+
+meta:
+  tool_file: "Third Parties Risk Evaluation Tool v2.0.xlsx"
+  tool_version: "2.0"
+  score_sheet: "Driver Configuration"
+  score_cell: "G2"
+  level_cell: "G3"
+  answer_sheet: "Supply Risk Drivers"
+  weights_sum_check: 1.00   # 0.88 fixed + 0.12 max data classification
+
+risk_levels:                # 'Driver Configuration'!G3 (_xlfn.IFS)
+  - {id: very_critical, label: "VERY CRITICAL", min: 0.75}
+  - {id: critical,      label: "CRITICAL",      min: 0.50}
+  - {id: significant,   label: "SIGNIFICANT",   min: 0.25}
+  - {id: not_critical,  label: "NOT CRITICAL",  min: 0.00}
+
+phase2_trigger: [very_critical, critical]   # these go to the Cyber Assessment
+
+drivers:
+
+  # --- DATA ACCESS ---------------------------------------------------------
+  - id: systems_access
+    name: "Information and Network Systems Access"
+    category: "DATA ACCESS"
+    weight: 0.12
+    answer_cell: "G5"
+    answer_domain: ["-", "MAINTENANCE", "TECHNICAL SUPPORT", "ADMINISTRATIVE ACCESS", "NOT APPLICABLE", "N/A"]
+    risk_values: ["MAINTENANCE", "TECHNICAL SUPPORT", "ADMINISTRATIVE ACCESS"]
+    fncdp: [GV.SC-04, GV.SC-07, PR.AA-05, DE.CM-06]
+    nist_t26: ["§2 Root access / high value data", "§4 Remote access"]
+    cti_observable: false
+    cti_note: >-
+      Contractual/perimeter fact, not observable from outside. Declared by the
+      Requesting function; the CTI layer never writes this cell.
+
+  - id: data_classification
+    name: "Data Classification (C1-C4)"
+    category: "DATA ACCESS"
+    weight: variable
+    weight_map:                       # 'Driver Configuration'!F14:G17
+      "C1 - Public": 0.02
+      "C2 - Internal Use": 0.04
+      "C3 - Confidential": 0.09
+      "C4 - Strictly Confidential": 0.12
+    answer_cell: "G6"
+    answer_domain: ["C1 - Public", "C2 - Internal Use", "C3 - Confidential", "C4 - Strictly Confidential"]
+    fncdp: [GV.SC-04, GV.SC-07, PR.DS-01, PR.DS-02, DP-ID.RA-11]
+    nist_t26: ["§2 High value data, Customer platform connection"]
+    cti_observable: false
+    cti_note: >-
+      Always contributes (it is added outside the FILTER, so it is never zero).
+      Declared, not observed.
+
+  - id: extra_eu_data
+    name: "Extra-EU Data Transfer or Processing"
+    category: "DATA ACCESS"
+    weight: 0.05
+    answer_cell: "G7"
+    answer_domain: ["-", "YES", "NO"]
+    fncdp: [GV.OC-03, GV.SC-05]
+    nist_t26: ["§2 Geopolitical risk, Adversary country", "§6 Onshore development"]
+    cti_observable: true
+    cti_sources: [shodan]
+    cti_note: >-
+      PARTIAL. Passive hosting geolocation is a proxy for infrastructure
+      location only, never for the legal basis of a transfer. A non-EU
+      netblock is a question to put to the supplier (SCC/adequacy), not a
+      finding of non-compliance. Max attainable strength: moderate.
+
+  # --- COMPLIANCE OBLIGATIONS ---------------------------------------------
+  - id: golden_power
+    name: "Golden Power Scope"
+    category: "COMPLIANCE OBLIGATIONS"
+    weight: 0.05
+    answer_cell: "G8"
+    answer_domain: ["-", "YES", "NO"]
+    fncdp: [GV.OC-03, GV.SC-05]
+    nist_t26: []
+    legal_ref: "D.L. 21/2012"
+    cti_observable: true
+    cti_sources: [opensanctions]
+    cti_note: >-
+      PARTIAL. Scope is a legal determination on the supply object. CTI can
+      only surface the extra-EU control/ownership element that makes the
+      D.L. 21/2012 notification assessment relevant -> escalate to Legal.
+
+  - id: nis2_scope
+    name: "NIS2 Scope"
+    category: "COMPLIANCE OBLIGATIONS"
+    weight: 0.05
+    answer_cell: "G9"
+    answer_domain: ["-", "YES", "NO"]
+    fncdp: [GV.OC-03, GV.SC-05]
+    nist_t26: []
+    legal_ref: "D.Lgs. 138/2024"
+    cti_observable: false
+    cti_note: "Legal scoping (sector + size). Not an OSINT question."
+
+  # --- SECURITY POSTURE ----------------------------------------------------
+  - id: vuln_exposure_mgmt
+    name: "Vulnerability & Exposure Management Deficiencies"
+    category: "SECURITY POSTURE"
+    weight: 0.11
+    answer_cell: "G10"
+    answer_domain: ["-", "YES", "NO"]
+    fncdp: [GV.SC-07, ID.RA-01, PR.PS-01, PR.PS-02]
+    nist_t26: ["§4 HW/SW reviews, Maintenance after deployment, Software baselines",
+               "§6 Development security measures, Open source validation, SDLC",
+               "§7 Reported vulnerabilities management"]
+    cti_observable: true
+    cti_sources: [crtsh, dns, shodan, nvd, kev, epss]
+    cti_note: >-
+      PRIMARY TARGET of the technical pillar. The driver text explicitly
+      includes "no oversight of its own internet-facing exposure" and
+      "known critical vulnerabilities remain unaddressed", which is exactly
+      what the chain crt.sh -> DNS -> Shodan -> NVD/KEV/EPSS observes.
+      Only driver reachable at strength=strong by a single pillar.
+
+  - id: no_security_certifications
+    name: "Absence of Recognised Security Certifications"
+    category: "SECURITY POSTURE"
+    weight: 0.04
+    answer_cell: "G11"
+    answer_domain: ["-", "YES", "NO"]
+    fncdp: [GV.SC-07, GV.SC-05]
+    nist_t26: ["§4 Software baselines, Mandates compliance", "§7 FIPS 140-2, Product integrity standards"]
+    cti_observable: false
+    cti_note: "Documentary evidence (certificate + scope statement). Phase 2."
+
+  # --- SUPPLY CHAIN AND DEPENDENCY ----------------------------------------
+  - id: supply_concentration
+    name: "Supply Concentration & Substitutability"
+    category: "SUPPLY CHAIN AND DEPENDENCY"
+    weight: 0.08
+    answer_cell: "G12"
+    answer_domain: ["-", "YES", "NO"]
+    fncdp: [GV.SC-04, ID.RA-10]
+    nist_t26: ["§2 Sales share, Diffusion, Switching cost, Alternative supplier, Stock reserve"]
+    cti_observable: false
+    cti_note: "Internal fact about our own dependency. Not about the supplier."
+
+  - id: operational_continuity
+    name: "Operational Continuity Criticality & High-Availability Requirements"
+    category: "SUPPLY CHAIN AND DEPENDENCY"
+    weight: 0.09
+    answer_cell: "G13"
+    answer_domain: ["-", "YES", "NO"]
+    fncdp: [GV.SC-04, ID.RA-10, PR.IR-03, PR.IR-04, PR.DS-11]
+    nist_t26: ["§2 Essential security function, Compromise leading to failure, Overall criticality"]
+    cti_observable: false
+    cti_note: "Contractual (SLA/RTO/RPO). Declared by the Requesting function."
+
+  - id: subsupplier_transparency
+    name: "Sub-supplier (Nth-Party) Transparency & Validation"
+    category: "SUPPLY CHAIN AND DEPENDENCY"
+    weight: 0.06
+    answer_cell: "G14"
+    answer_domain: ["-", "YES", "NO"]
+    fncdp: [GV.SC-04, GV.SC-07, GV.SC-05]
+    nist_t26: ["§3 Sub-tier ownership & location validated, Threat-scenario vetting, HW/SW list",
+               "§6 Familiarity with design-phase suppliers", "§7 BOM provision, OEM-only policy"]
+    cti_observable: false
+    cti_note: >-
+      Deliberately left to contractual artefacts (SBOM, DORA register, NIS2
+      sub-contracting clauses) and Phase 2. Documented future extension:
+      passive DNS / CNAME chains as a weak signal only.
+
+  # --- RISK GOVERNANCE -----------------------------------------------------
+  - id: ownership_due_diligence
+    name: "Ownership Due Diligence & Supplier Integrity"
+    category: "RISK GOVERNANCE"
+    weight: 0.10
+    answer_cell: "G15"
+    answer_domain: ["-", "YES", "NO"]
+    fncdp: [GV.SC-06, ID.RA-10]
+    nist_t26: ["§3 Foreign/domestic ownership, Ties to foreign govts, FOCI, Supplier location",
+               "§4 Personnel citizenship", "§6 Onshore development", "§7 Fines/sanctions, Litigation"]
+    cti_observable: true
+    cti_sources: [opensanctions]
+    cti_note: >-
+      Corporate pillar. Sanctions / PEP / adverse-media hit or opaque
+      ownership. A name match is never a fact: it always escalates to Legal
+      for adjudication (max strength moderate on fuzzy match, strong only on
+      exact identifier match).
+
+  - id: data_breach_12m
+    name: "Security Incidents / Data Breach (past 12 months)"
+    category: "RISK GOVERNANCE"
+    weight: 0.07
+    answer_cell: "G16"
+    answer_domain: ["-", "YES", "NO"]
+    fncdp: [GV.SC-07, GV.SC-08]
+    nist_t26: ["§7 Fines or sanctions past year, Litigation past year, PSRT programme, Incident notification"]
+    cti_observable: true
+    cti_sources: [ransomware_live]
+    cti_note: >-
+      Incident pillar. Driver requires the incident to be "public or formally
+      communicated" and within 12 months: a DLS listing satisfies both, so
+      this is the one non-technical driver reachable at strength=strong.
+
+  - id: tprm_history
+    name: "TPRM History / Legacy Risk"
+    category: "RISK GOVERNANCE"
+    weight: 0.06
+    answer_cell: "G17"
+    answer_domain: ["-", "YES", "NO"]
+    fncdp: [GV.SC-06, ID.RA-06]
+    nist_t26: ["§4 Risk mitigation activities recorded and tracked"]
+    cti_observable: false
+    cti_note: "Internal history. Read from our own TPRM register, not OSINT."
+
+# -----------------------------------------------------------------------------
+# Derived, for Chapter 6 and for the slides. Computed by hub/scoring.py, kept
+# here as the expected value so a test can assert it (any drift is a bug):
+#   addressable weight = sum(weight of drivers with cti_observable: true)
+#     0.05 extra_eu + 0.05 golden_power + 0.11 vuln + 0.10 ownership + 0.07 breach
+#   = 0.38  -> the CTI layer can independently inform 38% of inherent risk,
+#             and 0.11+0.10+0.07 = 0.28 of it at strong-attainable strength.
+# -----------------------------------------------------------------------------
+expected_coverage:
+  addressable_weight: 0.38
+  strong_attainable_weight: 0.28
