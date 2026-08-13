@@ -29,8 +29,9 @@ from .hub.prefill import prefill, read_declared_answers
 from .hub.scoring import projected_score, score
 from .models import RunStats, Target, utcnow
 from .pillars.technical.crtsh import CrtShCollector
+from grestin.pillars.technical.dns import DnsCollector
 
-TECHNICAL_CHAIN = [("crtsh", CrtShCollector), ("dns", None), ("shodan", None), ("vulns", None)]
+TECHNICAL_CHAIN = [("crtsh", CrtShCollector), ("dns", DnsCollector), ("shodan", None), ("vulns", None)]
 INDEPENDENT = [("opensanctions", None), ("ransomware_live", None)]
 
 
@@ -60,6 +61,7 @@ def run(args: argparse.Namespace) -> int:
                 continue
             t0 = time.monotonic()
             collector = cls(client, config, stats)
+            collector.inputs = handoff
             raws, fs = collector.run(target)
             stats.timing(f"pillar:{name}", int((time.monotonic() - t0) * 1000))
             raws_all += raws
@@ -67,6 +69,14 @@ def run(args: argparse.Namespace) -> int:
             if name == "crtsh":
                 handoff = collector.resolvable_hosts(raws, target)
                 stats.bump("crtsh.hosts_for_dns", len(handoff))
+                (out_dir / "handoff_hosts.json").write_text(
+                    json.dumps(handoff, indent=2), encoding="utf-8")
+            elif name == "dns":
+                addresses = collector.addresses(raws)
+                handoff = list(addresses)       # stage 3 is queried per address
+                stats.bump("dns.addresses_for_shodan", len(handoff))
+                (out_dir / "handoff_addresses.json").write_text(
+                    json.dumps(addresses, indent=2), encoding="utf-8")
             print(f"  [ok]   {name}: {len(raws)} raw, {len(fs)} findings", file=sys.stderr)
         (out_dir / "handoff_hosts.json").write_text(json.dumps(handoff, indent=2), encoding="utf-8")
 

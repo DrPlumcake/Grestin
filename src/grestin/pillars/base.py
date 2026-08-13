@@ -34,10 +34,18 @@ class BaseCollector:
     name: str = "base"
     pillar: Pillar = Pillar.TECHNICAL
 
+    #: Handoff from the previous stage of the technical chain. The runner sets
+    #: it before calling `run()`; stage 1 ignores it, stage 2 receives the
+    #: hostnames from crt.sh, stage 3 the addresses from DNS. Keeping it a
+    #: plain attribute rather than a `collect()` argument means every collector
+    #: keeps the same two-method interface, chained or independent.
+    inputs: list = []
+
     def __init__(self, client, config: Config, stats: RunStats | None = None) -> None:
         self.client = client
         self.config = config
         self.stats = stats
+        self.inputs = []
 
     # convenience ---------------------------------------------------------
     def bump(self, key: str, n: int = 1) -> None:

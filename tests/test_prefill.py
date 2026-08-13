@@ -82,16 +82,27 @@ def test_writes_only_suggest_yes_answers(tmp_path, cfg, summary):
     assert [w["driver"] for w in result["cells_written"]] == ["vuln_exposure_mgmt"]
 
 
-def test_array_formula_and_validations_survive(tmp_path, cfg, summary):
+def _formula(cell_value) -> str:
+    return cell_value.text if isinstance(cell_value, ArrayFormula) else str(cell_value or "")
+
+
+def test_scoring_model_and_validations_survive(tmp_path, cfg, summary):
+    """The write-back must not damage the workbook's own model.
+
+    Accepts either dialect, because tools/make_libreoffice_safe.py replaces the
+    Excel-only dynamic array with a SUMPRODUCT of identical meaning: the test
+    asserts that the score cell still sums the weighted YES answers and that
+    the answer column still feeds it, not which function does the summing.
+    """
     out = tmp_path / "prefilled.xlsx"
     prefill(TOOL, out, summary, cfg, "Acme", "TEST02", write_answers=True)
     wb = load_workbook(out)
     dc = wb[cfg.meta["score_sheet"]]
 
-    g2 = dc[cfg.meta["score_cell"]].value
-    assert isinstance(g2, ArrayFormula)
-    assert "FILTER" in g2.text                     # the model is intact
-    assert isinstance(dc["C7"].value, ArrayFormula)
+    g2 = _formula(dc[cfg.meta["score_cell"]].value)
+    assert ("FILTER" in g2) or ("SUMPRODUCT" in g2), g2
+    assert "D6" in g2                               # data classification still added
+    assert cfg.meta["answer_sheet"] in _formula(dc["C7"].value)
 
     ranges = {str(dv.sqref) for dv in wb[cfg.meta["answer_sheet"]].data_validations.dataValidation}
     assert {"G5", "G6", "G7:G17"} <= ranges

@@ -8,6 +8,7 @@ requires-python = ">=3.11"
 # four packages dropped from the original list, and what it would take to use them.
 dependencies = [
   "httpx",          # http.py - the single network egress point
+  "dnspython",      # pillars/technical/dns.py - pinned resolver, A/AAAA/CNAME only
   "pyyaml",         # config/*.yaml
   "jinja2",         # hub/report.py
   "openpyxl",       # hub/prefill.py - reads and writes the Excel tool
