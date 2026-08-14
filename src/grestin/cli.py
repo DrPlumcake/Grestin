@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -31,9 +32,10 @@ from .models import RunStats, Target, utcnow
 from .pillars.technical.crtsh import CrtShCollector
 from .pillars.technical.dns import DnsCollector
 from .pillars.technical.shodan import ShodanCollector
+from .pillars.technical.vulns import VulnsCollector
 
 TECHNICAL_CHAIN = [("crtsh", CrtShCollector), ("dns", DnsCollector),
-                   ("shodan", ShodanCollector), ("vulns", None)]
+                   ("shodan", ShodanCollector), ("vulns", VulnsCollector)]
 INDEPENDENT = [("opensanctions", None), ("ransomware_live", None)]
 
 
@@ -81,7 +83,7 @@ def run(args: argparse.Namespace) -> int:
                     json.dumps(addresses, indent=2), encoding="utf-8")
             elif name == "shodan":
                 cves = collector.candidate_cves(raws)
-                handoff = list(cves)            # stage 4 is queried per CVE
+                handoff = cves                  # mapping: stage 4 needs the context
                 stats.bump("shodan.candidate_cves", len(handoff))
                 (out_dir / "handoff_cves.json").write_text(
                     json.dumps(cves, indent=2), encoding="utf-8")
@@ -180,7 +182,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--run-id", help="reuse a previous run id (with --offline)")
     r.add_argument("--evidence", default="evidence")
     r.add_argument("--out", default="out")
-    r.add_argument("--prefill", help="path to Third Parties Risk Evaluation Tool v2.0.xlsx")
+    r.add_argument("--prefill", default=os.environ.get("TPRM_TOOL_XLSX"),
+                   help="path to Third Parties Risk Evaluation Tool v2.0.xlsx "
+                        "(defaults to TPRM_TOOL_XLSX, which .env can set)")
     r.add_argument("--write-answers", action="store_true",
                    help="also write YES into the answer column (default: suggestions only)")
     r.set_defaults(func=run)

@@ -84,12 +84,21 @@ SECRET_PARAMS = ("key", "api_key", "apikey", "token", "access_token")
 
 
 def redact(url: str) -> str:
-    """Return `url` with any credential query parameter replaced by REDACTED."""
+    """Return `url` with any credential query parameter replaced by REDACTED.
+
+    Returns the URL byte-identical when it carries no credential. That matters:
+    re-encoding every query string would change the evidence key of URLs that
+    contain literal commas or percent escapes (the EPSS batch endpoint does),
+    and a key that differs between store and lookup silently breaks the cache
+    and the offline replay.
+    """
     parts = urlsplit(url)
     if not parts.query:
         return url
-    query = [(k, "REDACTED" if k.lower() in SECRET_PARAMS else v)
-             for k, v in parse_qsl(parts.query, keep_blank_values=True)]
+    pairs = parse_qsl(parts.query, keep_blank_values=True)
+    if not any(k.lower() in SECRET_PARAMS for k, _ in pairs):
+        return url
+    query = [(k, "REDACTED" if k.lower() in SECRET_PARAMS else v) for k, v in pairs]
     return urlunsplit((parts.scheme, parts.netloc, parts.path,
                        urlencode(query), parts.fragment))
 

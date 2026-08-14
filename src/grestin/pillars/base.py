@@ -38,8 +38,10 @@ class BaseCollector:
     #: it before calling `run()`; stage 1 ignores it, stage 2 receives the
     #: hostnames from crt.sh, stage 3 the addresses from DNS. Keeping it a
     #: plain attribute rather than a `collect()` argument means every collector
-    #: keeps the same two-method interface, chained or independent.
-    inputs: list = []
+    #: keeps the same two-method interface, chained or independent. It is a
+    #: list of identifiers for stages 2 and 3 and a mapping for stage 4, which
+    #: needs each CVE's observation context to write a usable finding.
+    inputs: list | dict = []
 
     def __init__(self, client, config: Config, stats: RunStats | None = None) -> None:
         self.client = client

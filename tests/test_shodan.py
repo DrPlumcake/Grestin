@@ -40,6 +40,17 @@ def test_redaction_leaves_ordinary_urls_untouched():
     assert redact(url) == url
 
 
+def test_redaction_does_not_re_encode_urls_without_credentials():
+    """Regression: re-encoding changed the evidence key of the EPSS batch URL
+    (literal commas) and of crt.sh queries (percent escapes), which broke the
+    offline replay for those endpoints."""
+    for url in (
+        "https://api.first.org/data/v1/epss?cve=CVE-2024-3400,CVE-2024-23897",
+        "https://crt.sh/?q=%25.acme-ran.example&output=json&exclude=expired",
+    ):
+        assert redact(url) == url
+
+
 @pytest.mark.parametrize("param", SECRET_PARAMS)
 def test_every_declared_secret_parameter_is_covered(param):
     assert "s3cr3t" not in redact(f"https://api.example.com/x?{param}=s3cr3t")
