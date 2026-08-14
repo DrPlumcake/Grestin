@@ -126,6 +126,11 @@ class Target:
     domains: list[str] = field(default_factory=list)
     aliases: list[str] = field(default_factory=list)
     country: str | None = None
+    #: Registration identifiers we already hold for the counterparty
+    #: (registrationNumber, taxNumber, vatCode, leiCode...). They are what
+    #: turns a name similarity into an identification, so without them the
+    #: corporate pillar can never reach `strong` - by design, not by omission.
+    identifiers: dict[str, str] = field(default_factory=dict)
     declared_hosts: int | None = None
     declared_extra_eu: bool | None = None
     declared_breach_12m: bool | None = None

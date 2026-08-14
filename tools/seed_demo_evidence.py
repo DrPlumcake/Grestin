@@ -13,6 +13,7 @@ Usage:  python tools/seed_demo_evidence.py [run_id]
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -22,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from grestin.http import EvidenceStore, redact  # noqa: E402
+from grestin.pillars.corporate.opensanctions import MATCH  # noqa: E402
 from grestin.pillars.technical.dns import evidence_uri  # noqa: E402
 from grestin.pillars.technical.shodan import HOST_LOOKUP, INTERNETDB  # noqa: E402
 from grestin.pillars.technical.vulns import CVEDB, EPSS_BATCH, KEV_FEED  # noqa: E402
@@ -133,6 +135,61 @@ CVEDB_FIXTURE = {
 }
 
 
+# Corporate pillar fixture. Two candidates: one sanctioned entity whose name
+# merely resembles the counterparty (no shared identifier -> fuzzy, moderate,
+# never strong), and the actual counterparty with a controlling shareholder in
+# a non-EEA jurisdiction. Entities and ids are invented.
+OPENSANCTIONS_FIXTURE = {
+    "responses": {
+        "q1": {
+            "results": [
+                {
+                    "id": "NK-acmeRanHoldings",
+                    "caption": "Acme RAN Holdings Ltd",
+                    "schema": "Company",
+                    "score": 0.87,
+                    "match": False,
+                    "datasets": ["eu_fsf", "us_ofac_sdn"],
+                    "properties": {
+                        "name": ["Acme RAN Holdings Ltd"],
+                        "country": ["ru"],
+                        "topics": ["sanction"],
+                        "registrationNumber": ["9988776"],
+                    },
+                },
+                {
+                    "id": "NK-acmeRanSpa",
+                    "caption": "Acme RAN S.p.A.",
+                    "schema": "Company",
+                    "score": 0.96,
+                    "match": True,
+                    "datasets": ["it_registry"],
+                    "properties": {
+                        "name": ["Acme RAN S.p.A."],
+                        "country": ["it"],
+                        "topics": [],
+                        "registrationNumber": ["RM-1234567"],
+                        "ownershipAsset": [{
+                            "id": "own-1",
+                            "schema": "Ownership",
+                            "properties": {
+                                "percentage": ["62"],
+                                "owner": [{
+                                    "id": "NK-zetaInvest",
+                                    "caption": "Zeta Invest Group",
+                                    "schema": "Company",
+                                    "properties": {"country": ["cn"], "topics": []},
+                                }],
+                            },
+                        }],
+                    },
+                },
+            ]
+        }
+    }
+}
+
+
 def main() -> int:
     run_id = sys.argv[1] if len(sys.argv) > 1 else "DEMO"
     store = EvidenceStore(ROOT / "evidence", run_id=run_id)
@@ -172,6 +229,21 @@ def main() -> int:
                 {"status": "OK", "data": [{"cve": c, **EPSS_FIXTURE[c]} for c in cves]}, {})
     for cve, body in CVEDB_FIXTURE.items():
         store.store(redact(CVEDB.format(cve=cve)), 200, body | {"cve_id": cve}, {})
+    match_payload = {"queries": {"q1": {
+        "schema": "Company",
+        "properties": {
+            "name": ["Acme RAN S.p.A.", "Acme RAN SpA", "Acme RAN"],
+            "country": ["IT"],
+            "registrationNumber": ["RM-1234567"],
+            "vatCode": ["IT01234567890"],
+        },
+    }}}
+    body_digest = hashlib.sha256(
+        json.dumps(match_payload, sort_keys=True).encode()).hexdigest()[:16]
+    store.store(f"{MATCH.format(scope='default')}#body={body_digest}", 200,
+                OPENSANCTIONS_FIXTURE, {})
+    print("seeded 1 OpenSanctions match response")
+
     print(f"seeded KEV catalogue ({len(KEV_FIXTURE['vulnerabilities'])} entries), "
           f"1 EPSS batch, {len(CVEDB_FIXTURE)} CVE details")
 

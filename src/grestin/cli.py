@@ -29,6 +29,7 @@ from .hub import report as report_mod
 from .hub.prefill import prefill, read_declared_answers
 from .hub.scoring import projected_score, score
 from .models import RunStats, Target, utcnow
+from .pillars.corporate.opensanctions import OpenSanctionsCollector
 from .pillars.technical.crtsh import CrtShCollector
 from .pillars.technical.dns import DnsCollector
 from .pillars.technical.shodan import ShodanCollector
@@ -36,7 +37,7 @@ from .pillars.technical.vulns import VulnsCollector
 
 TECHNICAL_CHAIN = [("crtsh", CrtShCollector), ("dns", DnsCollector),
                    ("shodan", ShodanCollector), ("vulns", VulnsCollector)]
-INDEPENDENT = [("opensanctions", None), ("ransomware_live", None)]
+INDEPENDENT = [("opensanctions", OpenSanctionsCollector), ("ransomware_live", None)]
 
 
 def load_target(path: str | Path) -> Target:
@@ -94,6 +95,14 @@ def run(args: argparse.Namespace) -> int:
             if cls is None:
                 stats.bump(f"{name}.not_implemented")
                 print(f"  [skip] {name}: not implemented yet", file=sys.stderr)
+                continue
+            t0 = time.monotonic()
+            collector = cls(client, config, stats)
+            raws, fs = collector.run(target)         # no handoff: independent by design
+            stats.timing(f"pillar:{name}", int((time.monotonic() - t0) * 1000))
+            raws_all += raws
+            findings += fs
+            print(f"  [ok]   {name}: {len(raws)} raw, {len(fs)} findings", file=sys.stderr)
 
     # --- hub --------------------------------------------------------------
     summary = score(findings, config)

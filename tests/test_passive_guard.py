@@ -50,6 +50,30 @@ def test_non_get_is_blocked():
         assert_passive("https://crt.sh/", method="POST")
 
 
+def test_the_single_post_exception_is_permitted():
+    """OpenSanctions matches on a POST because the query is a structured
+    entity. The exception is one prefix wide, and it is tested."""
+    assert_passive("https://api.opensanctions.org/match/default", method="POST")
+
+
+def test_the_post_exception_does_not_widen_to_the_whole_host():
+    with pytest.raises(ActiveScanBlocked) as exc:
+        assert_passive("https://api.opensanctions.org/entities/NK-x", method="POST")
+    assert "POST is only permitted" in str(exc.value)
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE", "PATCH", "HEAD"])
+def test_no_other_verb_is_ever_allowed(method):
+    with pytest.raises(ActiveScanBlocked):
+        assert_passive("https://api.opensanctions.org/match/default", method=method)
+
+
+def test_denylist_still_wins_over_the_post_exception():
+    with pytest.raises(ActiveScanBlocked) as exc:
+        assert_passive("https://api.shodan.io/shodan/scan", method="POST")
+    assert "actively probe" in str(exc.value)
+
+
 def test_plain_http_is_blocked():
     with pytest.raises(ActiveScanBlocked):
         assert_passive("http://crt.sh/?q=example.com")

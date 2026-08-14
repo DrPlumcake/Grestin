@@ -8,6 +8,12 @@ domains:
 aliases:
   - "Acme RAN SpA"
   - "Acme RAN"
+# Registration identifiers from the procurement file. Without them the
+# corporate pillar tops out at `moderate`: a name is not an identity.
+identifiers:
+  registrationNumber: "RM-1234567"
+  vatCode: "IT01234567890"
+
 declared_hosts: 3              # from the supplier's Phase 2 asset statement
 declared_extra_eu: false
 declared_breach_12m: false

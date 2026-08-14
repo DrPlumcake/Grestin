@@ -103,6 +103,26 @@ def redact(url: str) -> str:
                        urlencode(query), parts.fragment))
 
 
+#: The single exception to "GET only", and it is deliberately narrow.
+#:
+#: OpenSanctions exposes its matching interface as a POST because the query is
+#: a structured entity (name, schema, country, identifiers), not something that
+#: fits in a URL. Loosening `assert_passive` to allow POST in general would
+#: give up the property the guard exists to protect, so instead there is a
+#: second allowlist containing exactly one prefix.
+#:
+#: The reasoning to put in Chapter 6: the guard's subject is the *third party*,
+#: not the HTTP verb. A POST that submits our own query to a sanctions database
+#: sends nothing to the supplier and touches none of its infrastructure; it is
+#: as passive as a GET to crt.sh. What would not be passive is a POST that
+#: instructs a service to probe the supplier - and that is what
+#: `https://api.shodan.io/shodan/scan` is, which is why it sits in DENIED and
+#: is refused for every verb.
+POST_ALLOWED: tuple[str, ...] = (
+    "https://api.opensanctions.org/match/",
+)
+
+
 class ActiveScanBlocked(Exception):
     """Raised when an endpoint violates the passive-reconnaissance policy."""
 
@@ -120,9 +140,6 @@ def assert_passive(url: str, method: str = "GET") -> None:
         with pytest.raises(ActiveScanBlocked):
             assert_passive("https://api.shodan.io/shodan/scan?ips=1.2.3.4")
     """
-    if method.upper() != "GET":
-        raise ActiveScanBlocked(f"only GET is passive; {method} refused for {url}")
-
     parts = urlsplit(url)
     if parts.scheme != "https":
         raise ActiveScanBlocked(f"non-https endpoint refused: {url}")
@@ -135,6 +152,16 @@ def assert_passive(url: str, method: str = "GET") -> None:
     for denied, reason in DENIED.items():
         if normalised.startswith(denied):
             raise ActiveScanBlocked(f"explicitly excluded ({reason}): {url}")
+
+    verb = method.upper()
+    if verb == "POST":
+        if not normalised.startswith(POST_ALLOWED):
+            raise ActiveScanBlocked(
+                f"POST is only permitted to the declared query endpoints "
+                f"{POST_ALLOWED}: {url}"
+            )
+    elif verb != "GET":
+        raise ActiveScanBlocked(f"only GET is passive; {method} refused for {url}")
 
     if not normalised.startswith(ALLOWED):
         raise ActiveScanBlocked(
@@ -333,6 +360,68 @@ class PassiveClient:
                                              dict(resp.headers))
                 return body, record
 
+            except (httpx.TransportError, json.JSONDecodeError, ValueError) as exc:
+                self._count("transport_errors")
+                last_exc = exc
+                time.sleep(2.0 ** attempt)
+
+        assert last_exc is not None
+        self._count("failures")
+        raise last_exc
+
+    def post_json(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        headers: dict[str, str] | None = None,
+        use_cache: bool = True,
+    ) -> tuple[Any, EvidenceRecord]:
+        """Passive POST, permitted only to the endpoints in POST_ALLOWED.
+
+        The evidence key includes a digest of the request body, because unlike
+        a GET the URL alone does not identify the request: two different
+        supplier names would otherwise collide on one cache entry and the
+        replay would return the wrong answer.
+        """
+        assert_passive(url, "POST")
+        body_digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+        key_url = f"{redact(url)}#body={body_digest}"
+
+        if use_cache:
+            cached = self.evidence.lookup(key_url)
+            if cached is not None:
+                self._count("cache_hits")
+                return cached["body"], EvidenceRecord(
+                    EvidenceStore.key(key_url), key_url, cached["status"],
+                    cached["retrieved_at"], str(self.evidence.blob_path(key_url)),
+                    from_cache=True,
+                )
+
+        if self.offline:
+            raise CacheMiss(f"offline mode and no stored evidence for {key_url}")
+
+        host = urlsplit(url).netloc.lower()
+        last_exc: Exception | None = None
+        for attempt in range(1, self.max_retries + 1):
+            self._throttle(host)
+            try:
+                resp = self._client.post(url, json=payload, headers=headers or {})
+                self._count("requests")
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    self._count(f"status_{resp.status_code}")
+                    time.sleep(max(float(resp.headers.get("retry-after", 0) or 0),
+                                   2.0 ** attempt))
+                    last_exc = httpx.HTTPStatusError(
+                        f"{resp.status_code} from {host}", request=resp.request,
+                        response=resp)
+                    continue
+                resp.raise_for_status()
+                body = resp.json()
+                record = self.evidence.store(key_url, resp.status_code, body,
+                                             dict(resp.headers))
+                return body, record
             except (httpx.TransportError, json.JSONDecodeError, ValueError) as exc:
                 self._count("transport_errors")
                 last_exc = exc
