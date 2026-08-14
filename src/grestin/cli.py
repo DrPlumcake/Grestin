@@ -30,6 +30,7 @@ from .hub.prefill import prefill, read_declared_answers
 from .hub.scoring import projected_score, score
 from .models import RunStats, Target, utcnow
 from .pillars.corporate.opensanctions import OpenSanctionsCollector
+from .pillars.incident.ransomware_live import RansomwareLiveCollector
 from .pillars.technical.crtsh import CrtShCollector
 from .pillars.technical.dns import DnsCollector
 from .pillars.technical.shodan import ShodanCollector
@@ -37,7 +38,8 @@ from .pillars.technical.vulns import VulnsCollector
 
 TECHNICAL_CHAIN = [("crtsh", CrtShCollector), ("dns", DnsCollector),
                    ("shodan", ShodanCollector), ("vulns", VulnsCollector)]
-INDEPENDENT = [("opensanctions", OpenSanctionsCollector), ("ransomware_live", None)]
+INDEPENDENT = [("opensanctions", OpenSanctionsCollector),
+               ("ransomware_live", RansomwareLiveCollector)]
 
 
 def load_target(path: str | Path) -> Target:

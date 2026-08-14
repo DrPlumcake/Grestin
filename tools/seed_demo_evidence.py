@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -24,6 +25,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from grestin.http import EvidenceStore, redact  # noqa: E402
 from grestin.pillars.corporate.opensanctions import MATCH  # noqa: E402
+from grestin.pillars.incident.ransomware_live import SEARCH, normalise_name  # noqa: E402
 from grestin.pillars.technical.dns import evidence_uri  # noqa: E402
 from grestin.pillars.technical.shodan import HOST_LOOKUP, INTERNETDB  # noqa: E402
 from grestin.pillars.technical.vulns import CVEDB, EPSS_BATCH, KEV_FEED  # noqa: E402
@@ -190,6 +192,33 @@ OPENSANCTIONS_FIXTURE = {
 }
 
 
+# Incident pillar fixture. Dates are computed relative to today so the demo
+# does not rot: one listing inside the 12-month window (drives data_breach_12m
+# to SUGGEST_YES and triggers the cross-pillar corroboration with the KEV
+# ransomware flag) and one well outside it, to show the window doing its job.
+def _ransomware_fixture() -> dict[str, list[dict[str, str]]]:
+    recent = (datetime.now(UTC) - timedelta(days=45)).strftime("%Y-%m-%d %H:%M:%S")
+    old = (datetime.now(UTC) - timedelta(days=820)).strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "acme-ran.example": [
+            {"victim": "Acme RAN S.p.A.", "group": "lockbit3",
+             "domain": "acme-ran.example", "published": recent, "country": "IT",
+             "claim_url": "http://example.onion/post/1",
+             "description": "Data allegedly exfiltrated from the corporate network."},
+            {"victim": "Acme RAN SpA", "group": "cl0p",
+             "domain": "acme-ran.example", "published": old, "country": "IT",
+             "claim_url": "http://example.onion/post/0"},
+        ],
+        "acme ran": [
+            # same trading name, no domain in the listing: the homonym case,
+            # capped at moderate and escalated to a human
+            {"victim": "ACME RAN Spa", "group": "play",
+             "domain": "", "published": recent, "country": "DE",
+             "claim_url": "http://example.onion/post/2"},
+        ],
+    }
+
+
 def main() -> int:
     run_id = sys.argv[1] if len(sys.argv) > 1 else "DEMO"
     store = EvidenceStore(ROOT / "evidence", run_id=run_id)
@@ -243,6 +272,13 @@ def main() -> int:
     store.store(f"{MATCH.format(scope='default')}#body={body_digest}", 200,
                 OPENSANCTIONS_FIXTURE, {})
     print("seeded 1 OpenSanctions match response")
+
+    fixture = _ransomware_fixture()
+    for query, victims in fixture.items():
+        store.store(redact(SEARCH.format(query=query)), 200, victims, {})
+    for alias in ("acme ran spa",):          # alias query, no results
+        store.store(redact(SEARCH.format(query=normalise_name(alias))), 200, [], {})
+    print(f"seeded {len(fixture)} ransomware.live searches")
 
     print(f"seeded KEV catalogue ({len(KEV_FIXTURE['vulnerabilities'])} entries), "
           f"1 EPSS batch, {len(CVEDB_FIXTURE)} CVE details")

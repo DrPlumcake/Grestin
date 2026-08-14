@@ -166,6 +166,10 @@ def score(findings: Iterable[Finding], config: Config) -> ScoreSummary:
         elif weak_count >= 3:
             verdict = Verdict.REVIEW
             why = f"{weak_count} weak signals accumulate into a question for the supplier"
+        elif weak_count:
+            verdict = Verdict.NOT_OBSERVABLE
+            why = (f"{weak_count} weak signal(s), below the threshold of 3: recorded in "
+                   "the report but not enough to put a question to the supplier")
         else:
             verdict = Verdict.NOT_OBSERVABLE
             why = "only informational signals; nothing to put to the supplier"
