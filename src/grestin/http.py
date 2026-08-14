@@ -31,7 +31,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
@@ -73,6 +73,25 @@ ALLOWED: tuple[str, ...] = (
     # incident pillar
     "https://api.ransomware.live/",
 )
+
+
+#: Query parameters that carry a credential. They are stripped before a URL is
+#: used as an evidence key, so no API key ever reaches evidence/index.jsonl,
+#: the finding records, or the appendix of the thesis. Two consequences worth
+#: stating in Chapter 6: the stored artefact is publishable as-is, and rotating
+#: a key does not invalidate the cache, because the cache key never contained it.
+SECRET_PARAMS = ("key", "api_key", "apikey", "token", "access_token")
+
+
+def redact(url: str) -> str:
+    """Return `url` with any credential query parameter replaced by REDACTED."""
+    parts = urlsplit(url)
+    if not parts.query:
+        return url
+    query = [(k, "REDACTED" if k.lower() in SECRET_PARAMS else v)
+             for k, v in parse_qsl(parts.query, keep_blank_values=True)]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path,
+                       urlencode(query), parts.fragment))
 
 
 class ActiveScanBlocked(Exception):
@@ -191,7 +210,12 @@ class PassiveClient:
         deserves it; it is a free public service).
     """
 
-    DEFAULT_INTERVALS = {"crt.sh": 2.0, "api.opensanctions.org": 1.0}
+    DEFAULT_INTERVALS = {
+        "crt.sh": 2.0,                 # free public service, deserves the courtesy
+        "api.shodan.io": 1.1,          # documented 1 request/second limit
+        "internetdb.shodan.io": 0.5,
+        "api.opensanctions.org": 1.0,
+    }
 
     def __init__(
         self,
@@ -245,19 +269,20 @@ class PassiveClient:
         offline mode, and httpx.HTTPStatusError after exhausting retries.
         """
         assert_passive(url, "GET")
+        key_url = redact(url)          # what the evidence store sees
 
         if use_cache:
-            cached = self.evidence.lookup(url)
+            cached = self.evidence.lookup(key_url)
             if cached is not None:
                 self._count("cache_hits")
                 return cached["body"], EvidenceRecord(
-                    EvidenceStore.key(url), url, cached["status"],
-                    cached["retrieved_at"], str(self.evidence.blob_path(url)),
+                    EvidenceStore.key(key_url), key_url, cached["status"],
+                    cached["retrieved_at"], str(self.evidence.blob_path(key_url)),
                     from_cache=True,
                 )
 
         if self.offline:
-            raise CacheMiss(f"offline mode and no stored evidence for {url}")
+            raise CacheMiss(f"offline mode and no stored evidence for {key_url}")
 
         host = urlsplit(url).netloc.lower()
         last_exc: Exception | None = None
@@ -281,6 +306,7 @@ class PassiveClient:
                     assert_passive(target, "GET")   # may raise: that is the point
                     self._count("redirects")
                     url = target
+                    key_url = redact(url)
                     continue
 
                 if resp.status_code in (429, 500, 502, 503, 504):
@@ -294,7 +320,8 @@ class PassiveClient:
 
                 resp.raise_for_status()
                 body = resp.json() if expect_json else resp.text
-                record = self.evidence.store(url, resp.status_code, body, dict(resp.headers))
+                record = self.evidence.store(key_url, resp.status_code, body,
+                                             dict(resp.headers))
                 return body, record
 
             except (httpx.TransportError, json.JSONDecodeError, ValueError) as exc:

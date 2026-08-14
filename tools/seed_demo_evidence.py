@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from grestin.http import EvidenceStore  # noqa: E402
 from grestin.pillars.technical.dns import evidence_uri  # noqa: E402
+from grestin.pillars.technical.shodan import HOST_LOOKUP, INTERNETDB  # noqa: E402
 
 DOMAIN = "acme-ran.example"
 FIXTURE = ROOT / "tests" / "fixtures" / "crtsh_acme.json"
@@ -44,6 +45,51 @@ DNS_FIXTURE = {
     "mail.acme-ran.example":       {"A": ["203.0.113.12"]},
     "uat-portal.acme-ran.example": {"CNAME": ["uat-acme.hosting-provider.example"]},
     "uat-acme.hosting-provider.example": {"NXDOMAIN": True},
+}
+
+
+# Shodan answers for the five addresses the DNS stage produces. Deliberately
+# shaped so the demo shows what stage 3 adds and stage 2 could not:
+#   .7   RDP exposed on a VPN/SSO address  -> management_service_exposed
+#   .23  Elasticsearch on the devops host  -> management_service_exposed
+#   .11  hosted in Singapore               -> hosting_outside_eea
+# plus candidate CVEs, which stage 4 will have to qualify against KEV/EPSS.
+SHODAN_INTERNETDB = {
+    "203.0.113.10": {"ports": [80, 443], "cpes": ["cpe:/a:nginx:nginx:1.24.0"],
+                     "hostnames": ["www.acme-ran.example"], "tags": [], "vulns": []},
+    "203.0.113.11": {"ports": [443], "cpes": ["cpe:/a:apache:tomcat:9.0.65"],
+                     "hostnames": ["api.acme-ran.example"], "tags": ["cloud"],
+                     "vulns": ["CVE-2023-46589"]},
+    "203.0.113.12": {"ports": [25, 587, 993], "cpes": [], "hostnames": ["mail.acme-ran.example"],
+                     "tags": [], "vulns": []},
+    "203.0.113.7":  {"ports": [443, 3389], "cpes": ["cpe:/a:paloaltonetworks:pan-os:10.2.4"],
+                     "hostnames": ["vpn.acme-ran.example", "sso.acme-ran.example"],
+                     "tags": ["vpn"], "vulns": ["CVE-2024-3400"]},
+    "203.0.113.23": {"ports": [8080, 9200], "cpes": ["cpe:/a:jenkins:jenkins:2.401.1"],
+                     "hostnames": ["jenkins.acme-ran.example", "grafana.acme-ran.example"],
+                     "tags": ["devops"], "vulns": ["CVE-2024-23897"]},
+}
+
+SHODAN_HOST = {   # the keyed endpoint: geolocation and product/version detail
+    "203.0.113.10": {"country_code": "IT", "org": "Acme RAN S.p.A.", "isp": "Example Telecom",
+                     "data": [{"port": 443, "transport": "tcp", "product": "nginx",
+                               "version": "1.24.0"}], "vulns": []},
+    "203.0.113.11": {"country_code": "SG", "org": "Cloud Provider APAC", "isp": "Cloud Provider",
+                     "data": [{"port": 443, "transport": "tcp", "product": "Apache Tomcat",
+                               "version": "9.0.65"}], "vulns": ["CVE-2023-46589"]},
+    "203.0.113.12": {"country_code": "IT", "org": "Acme RAN S.p.A.", "isp": "Example Telecom",
+                     "data": [{"port": 25, "transport": "tcp", "product": "Postfix"}],
+                     "vulns": []},
+    "203.0.113.7":  {"country_code": "IT", "org": "Acme RAN S.p.A.", "isp": "Example Telecom",
+                     "data": [{"port": 3389, "transport": "tcp",
+                               "product": "Microsoft Terminal Services"},
+                              {"port": 443, "transport": "tcp", "product": "PAN-OS",
+                               "version": "10.2.4"}], "vulns": ["CVE-2024-3400"]},
+    "203.0.113.23": {"country_code": "IT", "org": "Acme RAN S.p.A.", "isp": "Example Telecom",
+                     "data": [{"port": 8080, "transport": "tcp", "product": "Jenkins",
+                               "version": "2.401.1"},
+                              {"port": 9200, "transport": "tcp", "product": "Elasticsearch"}],
+                     "vulns": ["CVE-2024-23897"]},
 }
 
 
@@ -70,6 +116,15 @@ def main() -> int:
                         {"status": status, "values": values, "hostname": host,
                          "rrtype": rrtype, "resolver": RESOLVER}, {})
     print(f"seeded {len(DNS_FIXTURE) * 3} DNS answers via {RESOLVER}")
+
+    for ip, body in SHODAN_INTERNETDB.items():
+        store.store(INTERNETDB.format(ip=ip), 200, body | {"ip": ip}, {})
+    # The keyed lookup is stored under the REDACTED url, exactly as the client
+    # would key it, so the replay works without a key being present anywhere.
+    for ip, body in SHODAN_HOST.items():
+        url = HOST_LOOKUP.format(ip=ip, key="REDACTED")
+        store.store(url, 200, body | {"ip_str": ip}, {})
+    print(f"seeded {len(SHODAN_INTERNETDB)} internetdb + {len(SHODAN_HOST)} host lookups")
 
     print(f"\nevidence/{run_id}/index.jsonl written. Now run:\n"
           f"  grestin run --target config/targets_example.yaml "

@@ -29,9 +29,11 @@ from .hub.prefill import prefill, read_declared_answers
 from .hub.scoring import projected_score, score
 from .models import RunStats, Target, utcnow
 from .pillars.technical.crtsh import CrtShCollector
-from grestin.pillars.technical.dns import DnsCollector
+from .pillars.technical.dns import DnsCollector
+from .pillars.technical.shodan import ShodanCollector
 
-TECHNICAL_CHAIN = [("crtsh", CrtShCollector), ("dns", DnsCollector), ("shodan", None), ("vulns", None)]
+TECHNICAL_CHAIN = [("crtsh", CrtShCollector), ("dns", DnsCollector),
+                   ("shodan", ShodanCollector), ("vulns", None)]
 INDEPENDENT = [("opensanctions", None), ("ransomware_live", None)]
 
 
@@ -61,7 +63,7 @@ def run(args: argparse.Namespace) -> int:
                 continue
             t0 = time.monotonic()
             collector = cls(client, config, stats)
-            collector.inputs = handoff
+            collector.inputs = handoff          # output of the previous stage
             raws, fs = collector.run(target)
             stats.timing(f"pillar:{name}", int((time.monotonic() - t0) * 1000))
             raws_all += raws
@@ -77,8 +79,13 @@ def run(args: argparse.Namespace) -> int:
                 stats.bump("dns.addresses_for_shodan", len(handoff))
                 (out_dir / "handoff_addresses.json").write_text(
                     json.dumps(addresses, indent=2), encoding="utf-8")
+            elif name == "shodan":
+                cves = collector.candidate_cves(raws)
+                handoff = list(cves)            # stage 4 is queried per CVE
+                stats.bump("shodan.candidate_cves", len(handoff))
+                (out_dir / "handoff_cves.json").write_text(
+                    json.dumps(cves, indent=2), encoding="utf-8")
             print(f"  [ok]   {name}: {len(raws)} raw, {len(fs)} findings", file=sys.stderr)
-        (out_dir / "handoff_hosts.json").write_text(json.dumps(handoff, indent=2), encoding="utf-8")
 
         # --- corporate and incident pillars: independent -------------------
         for name, cls in INDEPENDENT:
@@ -110,8 +117,8 @@ def run(args: argparse.Namespace) -> int:
 
     if args.prefill:
         result = prefill(args.prefill, out_dir / f"{target.slug}_driver_matrix.xlsx",
-              summary, config, target.legal_name, run_id, projection,
-              write_answers=args.write_answers)
+                         summary, config, target.legal_name, run_id, projection,
+                         write_answers=args.write_answers)
         stats.bump("prefill.suggestions", len(result["suggestions_written"]))
         stats.bump("prefill.cells_written", len(result["cells_written"]))
         print(f"  [ok]   prefill ({result['mode']}): "
@@ -174,13 +181,13 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--evidence", default="evidence")
     r.add_argument("--out", default="out")
     r.add_argument("--prefill", help="path to Third Parties Risk Evaluation Tool v2.0.xlsx")
+    r.add_argument("--write-answers", action="store_true",
+                   help="also write YES into the answer column (default: suggestions only)")
     r.set_defaults(func=run)
 
     g = sub.add_parser("guard", help="test the passive policy against a URL")
     g.add_argument("--url", required=True)
     g.set_defaults(func=guard)
-    r.add_argument("--write-answers", action="store_true",
-                   help="also write YES into the answer column (default: suggestions only)")
 
     c = sub.add_parser("coverage", help="print the driver coverage table")
     c.set_defaults(func=coverage)
