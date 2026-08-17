@@ -42,7 +42,6 @@ service that should not be reachable from the Internet at all.
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Sequence
 from typing import Any
 
@@ -95,11 +94,10 @@ class ShodanCollector(BaseCollector):
             self.bump("addresses_skipped", len(self.inputs) - self.max_addresses)
         if not self.key:
             self.bump("geolocation_unavailable_no_api_key")
-            print("  [warn] shodan: no SHODAN_API_KEY -> geolocation unavailable, "
-                  "extra_eu_data stays NOT_OBSERVABLE", file=sys.stderr)
 
         raws: list[Raw] = []
-        for ip in addresses:
+        for i, ip in enumerate(addresses, start=1):
+            self.progress(i, len(addresses), "addresses")
             free = self._get(INTERNETDB.format(ip=ip))
             paid = None
             if self.key:
@@ -216,17 +214,31 @@ class ShodanCollector(BaseCollector):
                 note="reachable services recorded by Shodan; exploitability unassessed here",
             ))
 
-        # 2. management planes reachable from the Internet: one per address
-        for ip, hits in sorted(exposed_management.items()):
+        # 2. management planes reachable from the Internet.
+        #
+        # One finding for the whole estate, not one per address. On a large
+        # supplier the per-address version produced fifty-odd findings that all
+        # said the same thing and all bore on the same driver: the verdict was
+        # identical, the report was unreadable, and the evidence that actually
+        # mattered was buried. The addresses are kept in the evidence.
+        if exposed_management:
+            services_seen = sorted({h["service"] for hits in exposed_management.values()
+                                    for h in hits})
             findings.append(self.config.make_finding(
                 type="management_service_exposed",
                 source=Source.SHODAN,
-                subject=ip,
+                subject=f"{len(exposed_management)} address(es), "
+                        f"{', '.join(services_seen)}",
                 evidence={
-                    "address": ip,
-                    "hostnames": by_ip[ip]["shodan_hostnames"],
-                    "services": hits,
-                    "org": by_ip[ip]["org"],
+                    "addresses_affected": len(exposed_management),
+                    "services": services_seen,
+                    "detail": {
+                        ip: {"services": hits,
+                             "hostnames": by_ip[ip]["shodan_hostnames"][:5],
+                             "org": by_ip[ip]["org"]}
+                        for ip, hits in sorted(exposed_management.items())[:25]
+                    },
+                    "detail_truncated": max(0, len(exposed_management) - 25),
                 },
                 strength=SignalStrength.MODERATE,
                 evidence_refs=refs,

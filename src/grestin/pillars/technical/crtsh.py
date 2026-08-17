@@ -24,30 +24,96 @@ Operational notes, learned the hard way and worth a line in Chapter 6:
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 from ...models import Finding, Pillar, Raw, SignalStrength, Source, Target
 from ..base import BaseCollector
 
+#: Two forms of the same query. crt.sh answers from a large PostgreSQL
+#: instance and times out under load; `exclude=expired` makes the query
+#: markedly more expensive server-side, so when the cheap-to-ask form fails we
+#: retry without it and filter expired certificates ourselves. This turns a
+#: substantial share of the 502s into successful runs, which matters because a
+#: failed stage 1 invalidates the whole technical pillar.
 CRTSH = "https://crt.sh/?q={q}&output=json&exclude=expired"
+CRTSH_FALLBACK = "https://crt.sh/?q={q}&output=json"
+
+#: Second interface onto the *same* Certificate Transparency logs, not a sixth
+#: instrument. crt.sh is a single point of failure for the whole technical
+#: pillar - when it times out, stage 1 produces nothing and stages 2 to 4 have
+#: no subject. Cert Spotter reads the same public logs through a different
+#: operator, so falling back to it changes the interface and not the evidence.
+#: It is heavily rate limited without a key, hence last resort only.
+#: Worth one sentence in Chapter 6: the reproducibility of an OSINT method
+#: depends on the availability of the interface, not only of the data.
+CERTSPOTTER = ("https://api.certspotter.com/v1/issuances"
+               "?domain={domain}&include_subdomains=true"
+               "&expand=dns_names&expand=issuer")
 
 
 class CrtShCollector(BaseCollector):
     name = "crtsh"
     pillar = Pillar.TECHNICAL
 
+    #: Certificates expired before this date are dropped in `analyze`, so the
+    #: filtered and unfiltered queries yield the same inventory.
+    horizon: str = ""
+
+    def __init__(self, client, config, stats=None, horizon: str | None = None) -> None:
+        super().__init__(client, config, stats)
+        self.horizon = horizon or datetime.now(UTC).date().isoformat()
+
+    @staticmethod
+    def _from_certspotter(issuances: list[dict]) -> list[dict]:
+        """Adapt Cert Spotter's shape to crt.sh's, so `analyze` is untouched."""
+        entries = []
+        for item in issuances or []:
+            names = item.get("dns_names") or []
+            issuer = (item.get("issuer") or {}).get("name", "")
+            entries.append({
+                "common_name": names[0] if names else "",
+                "name_value": "\n".join(names),
+                "issuer_name": issuer,
+                "not_before": item.get("not_before"),
+                "not_after": item.get("not_after"),
+            })
+        return entries
+
     # -- collect -----------------------------------------------------------
     def collect(self, target: Target) -> list[Raw]:
         raws: list[Raw] = []
         for domain in target.domains:
             for q in (f"%.{domain}", domain):
-                url = CRTSH.format(q=quote(q, safe=""))
-                try:
-                    body, ev = self.client.get_json(url)
-                except Exception as exc:               # noqa: BLE001 - recorded, not fatal
+                encoded = quote(q, safe="")
+                body = ev = None
+                for attempt, template in enumerate((CRTSH, CRTSH_FALLBACK)):
+                    try:
+                        body, ev = self.client.get_json(template.format(q=encoded))
+                        if attempt:
+                            self.bump("fallback_queries")
+                        break
+                    except Exception as exc:           # noqa: BLE001 - recorded, not fatal
+                        last = exc
+                if ev is None and q.startswith("%."):
+                    # crt.sh is down for this query: read the same logs through
+                    # the other interface rather than losing the whole pillar.
+                    try:
+                        issuances, ev = self.client.get_json(
+                            CERTSPOTTER.format(domain=domain))
+                        body = self._from_certspotter(issuances)
+                        self.bump("certspotter_fallback")
+                        if self.stats is not None:
+                            self.stats.errors.append(
+                                f"crtsh {q}: unavailable, Cert Spotter used instead")
+                    except Exception as exc:           # noqa: BLE001
+                        last = exc
+                if ev is None:
                     self.bump("query_errors")
                     if self.stats is not None:
-                        self.stats.errors.append(f"crtsh {q}: {type(exc).__name__}: {exc}")
+                        self.stats.errors.append(
+                            f"crtsh {q}: {type(last).__name__}: {last} "
+                            "(filtered, unfiltered and Cert Spotter all failed)")
                     continue
                 self.bump("queries")
                 raws.append(Raw(
@@ -82,6 +148,10 @@ class CrtShCollector(BaseCollector):
             if raw.evidence_ref:
                 refs.append(raw.evidence_ref)
             for entry in raw.payload.get("entries", []):
+                # the fallback query does not filter server-side
+                if entry.get("not_after") and str(entry["not_after"]) < self.horizon:
+                    self.bump("expired_entries_filtered")
+                    continue
                 issuer = str(entry.get("issuer_name", ""))[:120]
                 issuers[issuer] = issuers.get(issuer, 0) + 1
                 for host in self._hostnames(entry):

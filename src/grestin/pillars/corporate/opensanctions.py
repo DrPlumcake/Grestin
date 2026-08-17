@@ -55,7 +55,14 @@ ENTITY = "https://api.opensanctions.org/entities/{entity_id}"
 #: OpenSanctions topic codes -> what they mean for our drivers.
 TOPIC_SANCTION = ("sanction", "sanction.linked", "export.control", "debarment")
 TOPIC_PEP = ("role.pep", "role.rca")
-TOPIC_ADVERSE = ("crime", "crime.fin", "crime.war", "poi", "reg.warn", "reg.action")
+TOPIC_ADVERSE = ("crime", "crime.fin", "crime.war", "crime.theft", "poi",
+                 "reg.warn", "reg.action", "wanted",
+                 # `export.risk` marks entities flagged for business in
+                 # sanctioned jurisdictions without themselves being listed.
+                 # Encountered on a real run against a major EU vendor, where
+                 # it was the only topic returned: without it the pillar
+                 # produced no finding at all on a genuinely relevant listing.
+                 "export.risk", "sanction.counter")
 
 #: Identifier properties that make a match an identity rather than a name.
 IDENTIFIER_PROPS = ("registrationNumber", "taxNumber", "leiCode", "vatCode",

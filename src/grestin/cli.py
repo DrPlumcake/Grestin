@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 from .config import Config
 from .http import ActiveScanBlocked, EvidenceStore, PassiveClient, assert_passive
 from .hub import report as report_mod
-from .hub.prefill import prefill, read_declared_answers
+from .hub.prefill import prefill, read_declared_answers, working_copy
 from .hub.scoring import projected_score, score
 from .models import RunStats, Target, utcnow
 from .pillars.corporate.opensanctions import OpenSanctionsCollector
@@ -44,7 +44,46 @@ INDEPENDENT = [("opensanctions", OpenSanctionsCollector),
 
 def load_target(path: str | Path) -> Target:
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-    return Target.from_dict(data)
+    target = Target.from_dict(data)
+    for warning in target.domain_warnings:
+        print(f"  [warn] target file: {warning}", file=sys.stderr)
+    if not target.domains:
+        print("  [warn] no usable domain in the target file: the technical pillar "
+              "cannot run", file=sys.stderr)
+    return target
+
+
+#: CLI limit -> collector attribute. Applied after construction so every
+#: collector keeps the same three-argument signature.
+LIMITS = ("max_hosts", "max_addresses", "max_cves")
+
+
+def _selected(chain, wanted: set[str] | None):
+    return [(n, c) for n, c in chain if wanted is None or n in wanted]
+
+
+def _status(raws: int, errors: int) -> str:
+    """A stage that produced nothing *and* errored has not observed a clean
+    supplier: it has failed. Conflating the two is the failure mode this
+    function exists to prevent."""
+    if raws == 0 and errors:
+        return RunStats.FAILED
+    if errors:
+        return RunStats.DEGRADED
+    return RunStats.OK if raws else RunStats.EMPTY
+
+
+def _tag(status: str) -> str:
+    return {RunStats.OK: "ok  ", RunStats.EMPTY: "none",
+            RunStats.DEGRADED: "warn", RunStats.FAILED: "FAIL"}.get(status, "skip")
+
+
+def _why(stage: dict) -> str:
+    if stage["status"] == RunStats.FAILED:
+        return f"  <-- {stage['errors']} error(s), NO data: not a clean result"
+    if stage["status"] == RunStats.DEGRADED:
+        return f"  <-- {stage['errors']} error(s), partial data"
+    return ""
 
 
 def run(args: argparse.Namespace) -> int:
@@ -58,21 +97,49 @@ def run(args: argparse.Namespace) -> int:
     evidence = EvidenceStore(args.evidence, run_id=run_id)
     findings, raws_all = [], []
 
-    with PassiveClient(evidence=evidence, offline=args.offline, stats=stats) as client:
+    with PassiveClient(evidence=evidence, offline=args.offline, stats=stats,
+                       max_retries=args.retries) as client:
         # --- technical pillar: sequential, each stage narrows the next -----
+        stages = set(args.stages.split(",")) if args.stages else None
+        if stages:
+            known = {n for n, _ in TECHNICAL_CHAIN + INDEPENDENT}
+            unknown = stages - known
+            if unknown:
+                print(f"unknown stage(s): {', '.join(sorted(unknown))}; "
+                      f"available: {', '.join(sorted(known))}", file=sys.stderr)
+                return 2
+
         handoff: list[str] = []
-        for name, cls in TECHNICAL_CHAIN:
+        for name, cls in _selected(TECHNICAL_CHAIN, stages):
             if cls is None:
                 stats.bump(f"{name}.not_implemented")
+                stats.record_stage(name, RunStats.NOT_IMPLEMENTED)
                 print(f"  [skip] {name}: not implemented yet", file=sys.stderr)
                 continue
+            if name != "crtsh" and not handoff:
+                # No input from upstream. Reporting this as "empty" would be a
+                # lie: the stage never got the chance to observe anything.
+                upstream_failed = any(
+                    v["status"] == RunStats.FAILED for v in stats.stages.values())
+                stats.record_stage(name, RunStats.SKIPPED_UPSTREAM if upstream_failed
+                                   else RunStats.EMPTY)
+                print(f"  [skip] {name}: no input from the previous stage",
+                      file=sys.stderr)
+                continue
+            errors_before = len(stats.errors)
             t0 = time.monotonic()
             collector = cls(client, config, stats)
             collector.inputs = handoff          # output of the previous stage
+            for limit in LIMITS:                # honour the CLI budget caps
+                value = getattr(args, limit, None)
+                if value and hasattr(collector, limit):
+                    setattr(collector, limit, value)
             raws, fs = collector.run(target)
             stats.timing(f"pillar:{name}", int((time.monotonic() - t0) * 1000))
             raws_all += raws
             findings += fs
+            stats.record_stage(name, _status(len(raws), len(stats.errors) - errors_before),
+                               len(raws), len(fs), len(stats.errors) - errors_before)
             if name == "crtsh":
                 handoff = collector.resolvable_hosts(raws, target)
                 stats.bump("crtsh.hosts_for_dns", len(handoff))
@@ -90,31 +157,50 @@ def run(args: argparse.Namespace) -> int:
                 stats.bump("shodan.candidate_cves", len(handoff))
                 (out_dir / "handoff_cves.json").write_text(
                     json.dumps(cves, indent=2), encoding="utf-8")
-            print(f"  [ok]   {name}: {len(raws)} raw, {len(fs)} findings", file=sys.stderr)
+            print(f"  [{_tag(stats.stages[name]['status'])}] {name}: "
+                  f"{len(raws)} raw, {len(fs)} findings"
+                  f"{_why(stats.stages[name])}", file=sys.stderr)
 
         # --- corporate and incident pillars: independent -------------------
-        for name, cls in INDEPENDENT:
+        for name, cls in _selected(INDEPENDENT, stages):
             if cls is None:
                 stats.bump(f"{name}.not_implemented")
+                stats.record_stage(name, RunStats.NOT_IMPLEMENTED)
                 print(f"  [skip] {name}: not implemented yet", file=sys.stderr)
                 continue
             t0 = time.monotonic()
+            errors_before = len(stats.errors)
             collector = cls(client, config, stats)
             raws, fs = collector.run(target)         # no handoff: independent by design
             stats.timing(f"pillar:{name}", int((time.monotonic() - t0) * 1000))
             raws_all += raws
             findings += fs
-            print(f"  [ok]   {name}: {len(raws)} raw, {len(fs)} findings", file=sys.stderr)
+            stats.record_stage(name, _status(len(raws), len(stats.errors) - errors_before),
+                               len(raws), len(fs), len(stats.errors) - errors_before)
+            print(f"  [{_tag(stats.stages[name]['status'])}] {name}: "
+                  f"{len(raws)} raw, {len(fs)} findings"
+                  f"{_why(stats.stages[name])}", file=sys.stderr)
 
     # --- hub --------------------------------------------------------------
     summary = score(findings, config)
+
+    # One master template, one persistent working copy per third party.
+    template = args.tool or args.prefill
+    workbook: Path | None = None
+    if template:
+        workbook = working_copy(template, args.tool_dir, target.slug, config,
+                                fresh=args.fresh_tool,
+                                keep_template_answers=args.keep_template_answers)
+        print(f"  [ok]   workbook for this third party: {workbook}", file=sys.stderr)
+
     declared: dict[str, str] = {}
     if args.declared:
         declared = yaml.safe_load(Path(args.declared).read_text(encoding="utf-8")) or {}
-    elif args.prefill:
-        # read what the compiler has already answered straight from the workbook
-        declared = read_declared_answers(args.prefill, config)
-        print(f"  [ok]   declared answers read from the tool: {len(declared)}", file=sys.stderr)
+    elif workbook:
+        # what the compiler has already answered, read from *their* copy
+        declared = read_declared_answers(workbook, config)
+        print(f"  [ok]   declared answers read from the workbook: {len(declared)}",
+              file=sys.stderr)
     projection = projected_score(summary, config, declared)
 
     (out_dir / "findings.json").write_text(
@@ -125,11 +211,15 @@ def run(args: argparse.Namespace) -> int:
         json.dumps(summary.to_dict() | {"projection": projection}, indent=2, ensure_ascii=False),
         encoding="utf-8")
 
-    md = report_mod.render(target, summary, config, run_id, utcnow(), projection)
+    md = report_mod.render(target, summary, config, run_id, utcnow(), projection, stats)
     report_mod.write(out_dir / "risk_assessment_report.md", md)
 
-    if args.prefill:
-        result = prefill(args.prefill, out_dir / f"{target.slug}_driver_matrix.xlsx",
+    if workbook:
+        # the compiler's copy is updated in place, so the suggestions are where
+        # they will actually be read; the run directory keeps a snapshot
+        prefill(workbook, workbook, summary, config, target.legal_name, run_id,
+                projection, write_answers=args.write_answers)
+        result = prefill(workbook, out_dir / f"{target.slug}_driver_matrix.xlsx",
                          summary, config, target.legal_name, run_id, projection,
                          write_answers=args.write_answers)
         stats.bump("prefill.suggestions", len(result["suggestions_written"]))
@@ -143,7 +233,14 @@ def run(args: argparse.Namespace) -> int:
     stats.finished_at = utcnow()
     stats.dump(str(out_dir / "stats.json"))
 
-    print(f"\nTarget: {target.legal_name}")
+    banner = {"complete": "", "degraded": "  [PARTIAL RUN]",
+              "invalid": "  [INCOMPLETE RUN - DO NOT READ AS A CLEAN RESULT]"}
+    print(f"\nTarget: {target.legal_name}{banner[stats.integrity]}")
+    if stats.integrity != "complete":
+        print(f"Integrity: {stats.integrity} - failed or partial stage(s): "
+              f"{', '.join(stats.failed_stages)}")
+        print("The absence of findings below reflects a failed collection, not the "
+              "third party. Re-run before drawing any conclusion.")
     print(f"Findings: {len(findings)} | SUGGEST_YES: {len(summary.suggest_yes)} | "
           f"REVIEW: {len(summary.review)}")
     print(f"Addressable weight: {summary.addressable_weight:.0%} | "
@@ -190,12 +287,33 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--target", required=True)
     r.add_argument("--declared", help="YAML of the answers already given in the tool")
     r.add_argument("--offline", action="store_true", help="replay from the evidence store only")
+    r.add_argument("--retries", type=int, default=3,
+                   help="HTTP retries per request; raise to 5 or 6 when crt.sh is "
+                        "returning 502 (default 3)")
     r.add_argument("--run-id", help="reuse a previous run id (with --offline)")
     r.add_argument("--evidence", default="evidence")
     r.add_argument("--out", default="out")
-    r.add_argument("--prefill", default=os.environ.get("TPRM_TOOL_XLSX"),
-                   help="path to Third Parties Risk Evaluation Tool v2.0.xlsx "
-                        "(defaults to TPRM_TOOL_XLSX, which .env can set)")
+    r.add_argument("--tool", default=os.environ.get("TPRM_TOOL_XLSX"),
+                   help="master Third Parties Risk Evaluation Tool .xlsx used as a "
+                        "template (defaults to TPRM_TOOL_XLSX, which .env can set)")
+    r.add_argument("--tool-dir", default=os.environ.get("TPRM_TOOL_DIR", "tool/work"),
+                   help="where the per-third-party working copies live "
+                        "(default tool/work)")
+    r.add_argument("--fresh-tool", action="store_true",
+                   help="recreate this third party's working copy from the template, "
+                        "discarding any answers already given in it")
+    r.add_argument("--keep-template-answers", action="store_true",
+                   help="do not clear the answer column when creating a working copy")
+    r.add_argument("--prefill", help=argparse.SUPPRESS)   # former name of --tool
+    r.add_argument("--stages", help="comma-separated subset to run, e.g. "
+                                    "'crtsh' to size a surface before spending API quota, "
+                                    "or 'crtsh,dns,shodan'")
+    r.add_argument("--max-hosts", type=int,
+                   help="cap on hostnames resolved by the DNS stage (default 250)")
+    r.add_argument("--max-addresses", type=int,
+                   help="cap on addresses looked up in Shodan (default 100)")
+    r.add_argument("--max-cves", type=int,
+                   help="cap on CVEs qualified by the vulnerability stage (default 300)")
     r.add_argument("--write-answers", action="store_true",
                    help="also write YES into the answer column (default: suggestions only)")
     r.set_defaults(func=run)

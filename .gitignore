@@ -13,5 +13,7 @@ evidence/*
 !evidence/.gitkeep
 out/*
 !out/.gitkeep
+config/targets/*
+!config/targets/.gitkeep
 
 tool/

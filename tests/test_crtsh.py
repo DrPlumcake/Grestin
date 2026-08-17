@@ -15,7 +15,10 @@ FIXTURE = Path(__file__).parent / "fixtures" / "crtsh_acme.json"
 
 @pytest.fixture
 def collector():
-    return CrtShCollector(client=None, config=Config.load(), stats=None)
+    # The fixture certificates are from 2025; pin the horizon so the run is
+    # reproducible instead of depending on today's date.
+    return CrtShCollector(client=None, config=Config.load(), stats=None,
+                          horizon="2025-01-01")
 
 
 @pytest.fixture
@@ -98,3 +101,57 @@ def test_empty_response_yields_no_findings(collector, target):
     empty = [Raw(source=Source.CRTSH, kind="certificate_entries", subject="acme-ran.example",
                  payload={"query": "%.acme-ran.example", "entries": []})]
     assert collector.analyze(empty, target) == []
+
+
+def test_expired_certificates_are_filtered_client_side(raws, target):
+    """crt.sh's `exclude=expired` makes the query far heavier server-side, so
+    the collector falls back to the unfiltered form when it times out. The
+    inventory must come out the same either way, which means the expiry filter
+    has to exist here too."""
+    late = CrtShCollector(client=None, config=Config.load(), stats=None,
+                          horizon="2026-01-01")
+    assert late.analyze(raws, target) == []          # every fixture cert expired in 2025
+
+    early = CrtShCollector(client=None, config=Config.load(), stats=None,
+                           horizon="2025-01-01")
+    inventory = next(f for f in early.analyze(raws, target)
+                     if f.type == "subdomain_observed")
+    assert inventory.evidence["hosts_observed"] == 10
+
+
+# --- resilience of stage 1 --------------------------------------------------
+def test_certspotter_adapter_produces_crtsh_shaped_entries():
+    """The fallback must not require `analyze` to know where data came from."""
+    entries = CrtShCollector._from_certspotter([{
+        "dns_names": ["vpn.acme-ran.example", "sso.acme-ran.example"],
+        "issuer": {"name": "C=US, O=Let's Encrypt, CN=R3"},
+        "not_before": "2025-02-10T09:00:00", "not_after": "2025-05-11T09:00:00",
+    }])
+    assert entries[0]["common_name"] == "vpn.acme-ran.example"
+    assert "sso.acme-ran.example" in entries[0]["name_value"]
+    assert entries[0]["not_after"] == "2025-05-11T09:00:00"
+
+
+def test_both_interfaces_yield_the_same_inventory(target):
+    """Same logs, different operator: the findings must not depend on which
+    interface answered."""
+    cfg = Config.load()
+    crtsh_entries = json.loads(FIXTURE.read_text())
+    spotter_entries = CrtShCollector._from_certspotter([
+        {"dns_names": [n for n in str(e.get("name_value", "")).splitlines() if n],
+         "issuer": {"name": e.get("issuer_name", "")},
+         "not_before": e.get("not_before"), "not_after": e.get("not_after")}
+        for e in crtsh_entries
+    ])
+    collector = CrtShCollector(None, cfg, None, horizon="2025-01-01")
+    a = collector.analyze([Raw(source=Source.CRTSH, kind="certificate_entries",
+                               subject="acme-ran.example",
+                               payload={"query": "%.acme-ran.example",
+                                        "entries": crtsh_entries})], target)
+    b = collector.analyze([Raw(source=Source.CRTSH, kind="certificate_entries",
+                               subject="acme-ran.example",
+                               payload={"query": "%.acme-ran.example",
+                                        "entries": spotter_entries})], target)
+    inv_a = next(f for f in a if f.type == "subdomain_observed")
+    inv_b = next(f for f in b if f.type == "subdomain_observed")
+    assert inv_a.evidence["hosts_observed"] == inv_b.evidence["hosts_observed"] == 10

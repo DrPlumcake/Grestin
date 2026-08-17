@@ -114,3 +114,60 @@ def test_declared_yes_is_not_double_counted(cfg):
     proj = projected_score(summary, cfg, declared)
     assert proj["declared_score"] == 0.11
     assert proj["delta"] == 0.0
+
+
+# --- run integrity: R1 applied to the run itself ----------------------------
+def test_a_failed_stage_is_never_reported_as_a_clean_result():
+    """The Nokia case, from a real run: crt.sh aborted, the whole technical
+    chain produced nothing, and the summary line was indistinguishable from a
+    supplier with no exposed surface. A run must carry its own integrity."""
+    from grestin.models import RunStats
+
+    stats = RunStats(run_id="x", target="Nokia Corporation")
+    stats.record_stage("crtsh", RunStats.FAILED, raws=0, findings=0, errors=2)
+    assert stats.integrity == "invalid"
+    assert stats.failed_stages == ["crtsh"]
+    assert stats.to_dict()["integrity"] == "invalid"
+
+
+def test_a_stage_that_answered_with_nothing_is_not_a_failure():
+    from grestin.models import RunStats
+
+    stats = RunStats(run_id="x", target="y")
+    stats.record_stage("crtsh", RunStats.OK, raws=2, findings=3)
+    stats.record_stage("ransomware_live", RunStats.EMPTY)
+    assert stats.integrity == "complete"
+    assert stats.failed_stages == []
+
+
+def test_partial_data_marks_the_run_degraded():
+    from grestin.models import RunStats
+
+    stats = RunStats(run_id="x", target="y")
+    stats.record_stage("crtsh", RunStats.OK, raws=2, findings=3)
+    stats.record_stage("dns", RunStats.DEGRADED, raws=40, findings=1, errors=6)
+    assert stats.integrity == "degraded"
+    assert stats.failed_stages == ["dns"]
+
+
+# --- target hygiene ---------------------------------------------------------
+def test_domains_pasted_as_urls_are_normalised_and_reported():
+    """A real target file listed three browser URLs. crt.sh answered 200 with
+    an empty result set and the run looked successful."""
+    from grestin.models import Target
+
+    t = Target(legal_name="Sapienza", domains=[
+        "https://www.uniroma1.it/",
+        "https://www.uniroma1.it/en/pagina-strutturale/home",
+        "UNIROMA1.IT",
+    ])
+    assert t.domains == ["uniroma1.it"]
+    assert len(t.domain_warnings) >= 2
+
+
+def test_unusable_domain_is_dropped_with_a_warning():
+    from grestin.models import Target
+
+    t = Target(legal_name="X", domains=["localhost", "acme.example"])
+    assert t.domains == ["acme.example"]
+    assert any("not a usable domain" in w for w in t.domain_warnings)

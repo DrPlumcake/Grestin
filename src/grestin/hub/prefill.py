@@ -56,6 +56,44 @@ SUGGESTION_COLS = {"verdict": 8, "strength": 9, "rationale": 10}   # H, I, J
 HEADER_ROW = 4
 
 
+def working_copy(template: str | Path, tool_dir: str | Path, slug: str,
+                 config: Config, fresh: bool = False,
+                 keep_template_answers: bool = False) -> Path:
+    """Return the persistent per-supplier workbook, creating it if needed.
+
+    One master template, one working copy per third party, no manual copying.
+    The working copy is where the compiler actually answers, so the next run
+    reads those answers back as `declared` and reports the delta against them
+    - which is what makes the declared-vs-projected comparison mean anything.
+
+    On creation the answer column is cleared, because a template usually
+    carries whatever was last typed into it: without this, every supplier
+    inherits the same phantom declared score. Pass
+    `keep_template_answers=True` when the template legitimately holds defaults.
+    """
+    template, dest = Path(template), Path(tool_dir) / f"{slug}.xlsx"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    if dest.exists() and not fresh:
+        return dest
+
+    shutil.copyfile(template, dest)
+    if keep_template_answers:
+        return dest
+
+    wb = load_workbook(dest)
+    ws = wb[config.meta["answer_sheet"]]
+    for driver in config.drivers.values():
+        ws[driver.answer_cell] = "-"
+    for col in SUGGESTION_COLS.values():             # drop stale CTI columns
+        for row in range(HEADER_ROW, HEADER_ROW + 15):
+            ws.cell(row=row, column=col).value = None
+    if EVIDENCE_SHEET in wb.sheetnames:
+        del wb[EVIDENCE_SHEET]
+    wb.save(dest)
+    return dest
+
+
 def read_declared_answers(tool_path: str | Path, config: Config) -> dict[str, str]:
     """Read the answers already given in the tool: driver_id -> answer.
 
@@ -95,7 +133,11 @@ def prefill(
     """Copy the tool, add the CTI suggestion columns and the evidence sheet."""
     tool_path, out_path = Path(tool_path), Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(tool_path, out_path)          # never edit the master
+    # Updating a workbook in place is legitimate for the per-third-party
+    # working copy; copying is for every other case, so that a master template
+    # is never touched.
+    if tool_path.resolve() != out_path.resolve():
+        shutil.copyfile(tool_path, out_path)
 
     excel_only = uses_excel_only_formulas(tool_path, config)
     wb = load_workbook(out_path)                  # keep formulas: no data_only

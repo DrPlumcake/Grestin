@@ -61,6 +61,7 @@ DENIED: dict[str, str] = {
 ALLOWED: tuple[str, ...] = (
     # technical pillar
     "https://crt.sh/",                                  # certificate transparency
+    "https://api.certspotter.com/v1/issuances",          # the same CT logs, 2nd interface
     "https://internetdb.shodan.io/",                    # free host lookup
     "https://cvedb.shodan.io/",                          # CVE metadata
     "https://api.shodan.io/shodan/host/",                # host LOOKUP, not scan
@@ -246,6 +247,12 @@ class PassiveClient:
         deserves it; it is a free public service).
     """
 
+    #: Per-host read timeouts. crt.sh queries a very large PostgreSQL instance;
+    #: on a domain with tens of thousands of logged certificates the query
+    #: legitimately takes minutes, and a 30 s timeout turns that into a failed
+    #: stage 1 - which invalidates the whole technical pillar for that target.
+    DEFAULT_TIMEOUTS = {"crt.sh": 180.0}
+
     DEFAULT_INTERVALS = {
         "crt.sh": 2.0,                 # free public service, deserves the courtesy
         "api.shodan.io": 1.1,          # documented 1 request/second limit
@@ -330,7 +337,9 @@ class PassiveClient:
                 headers = {}
                 if api_key_header:
                     headers[api_key_header[0]] = api_key_header[1]
-                resp = self._client.get(url, headers=headers)
+                resp = self._client.get(
+                    url, headers=headers,
+                    timeout=self.DEFAULT_TIMEOUTS.get(host, self.timeout))
                 self._count("requests")
                 if self.stats is not None:
                     self.stats.timing(f"http:{host}", int((time.monotonic() - t0) * 1000))

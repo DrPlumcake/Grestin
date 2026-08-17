@@ -121,7 +121,8 @@ class VulnsCollector(BaseCollector):
                             payload={"scores": epss}))
 
         # 3. CVSS and description, one call per CVE, best effort
-        for cve in cves:
+        for i, cve in enumerate(cves, start=1):
+            self.progress(i, len(cves), "CVEs")
             body = self._safe(CVEDB.format(cve=cve))
             self.bump("cvedb_lookups")
             raws.append(Raw(

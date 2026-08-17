@@ -12,6 +12,8 @@ findings, so a reviewer can re-derive every statement in the report.
 
 from __future__ import annotations
 
+import sys
+import time
 from collections.abc import Sequence
 from typing import Protocol
 
@@ -50,6 +52,26 @@ class BaseCollector:
         self.inputs = []
 
     # convenience ---------------------------------------------------------
+    def progress(self, done: int, total: int, unit: str = "items") -> None:
+        """Overwrite a single stderr line. A real run spends minutes inside one
+        collector; without this the user cannot tell a slow stage from a hung
+        one, and rate limits make every stage look hung."""
+        if total <= 0 or not sys.stderr.isatty():
+            return
+        now = time.monotonic()
+        last = getattr(self, "_last_progress", 0.0)
+        if done < total and now - last < 0.4:
+            return
+        self._last_progress = now
+        pct = 100 * done / total
+        bar = "#" * int(pct // 5) + "." * (20 - int(pct // 5))
+        end = "\n" if done >= total else ""
+        # Padded to a fixed width: without it the shorter next line leaves the
+        # tail of the previous one on screen, and stage summaries appeared to
+        # go missing on Windows terminals.
+        line = f"         {self.name:<16}[{bar}] {done}/{total} {unit}"
+        print(f"\r{line:<78}", end=end, file=sys.stderr, flush=True)
+
     def bump(self, key: str, n: int = 1) -> None:
         if self.stats is not None:
             self.stats.bump(f"{self.name}.{key}", n)

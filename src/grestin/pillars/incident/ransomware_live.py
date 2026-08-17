@@ -47,13 +47,19 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
+
 from ...models import Finding, Pillar, Raw, SignalStrength, Source, Target
 from ..base import BaseCollector
 
-#: Free, keyless. Verify the path against the current API documentation before
-#: a live run: this project pins v2, but the service has changed its routes
-#: between major versions and a 404 here is a configuration problem, not a
-#: finding of "no incidents".
+#: Free and keyless (v2). Documented at https://www.ransomware.live/apidocs.
+#:
+#: The API returns **404 when a search has no results**, which is the common
+#: case: most suppliers are not on a leak site. Treating that 404 as an error
+#: would mark the pillar as failed on every clean supplier and would hide real
+#: failures in the noise, so it is normalised to an empty result set here and
+#: an empty `Raw` is still emitted - the query happened, and the evidence must
+#: say so.
 SEARCH = "https://api.ransomware.live/v2/searchvictims/{query}"
 
 #: Legal-form suffixes stripped before comparing names. Not exhaustive by
@@ -128,9 +134,25 @@ class RansomwareLiveCollector(BaseCollector):
         queries += [normalise_name(a) for a in target.aliases]
 
         raws: list[Raw] = []
-        for query in dict.fromkeys(q for q in queries if q):     # dedup, keep order
+        unique = list(dict.fromkeys(q for q in queries if q))     # dedup, keep order
+        for i, query in enumerate(unique, start=1):
+            self.progress(i, len(unique), "queries")
             try:
                 body, ev = self.client.get_json(SEARCH.format(query=query))
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 404:
+                    self.bump("query_errors")
+                    if self.stats is not None:
+                        self.stats.errors.append(
+                            f"ransomware.live {query}: HTTP {exc.response.status_code}")
+                    continue
+                self.bump("queries_no_results")
+                raws.append(Raw(source=Source.RANSOMWARE_LIVE, kind="victim_search",
+                                subject=query,
+                                payload={"query": query, "victims": [],
+                                         "api_status": 404,
+                                         "meaning": "no victim matched this keyword"}))
+                continue
             except Exception as exc:                 # noqa: BLE001 - recorded, not fatal
                 self.bump("query_errors")
                 if self.stats is not None:

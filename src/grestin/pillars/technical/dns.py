@@ -162,7 +162,8 @@ class DnsCollector(BaseCollector):
             self.bump("hosts_skipped", len(self.inputs) - self.max_hosts)
 
         raws: list[Raw] = []
-        for host in hosts:
+        for i, host in enumerate(hosts, start=1):
+            self.progress(i, len(hosts), "hostnames")
             records = {rr: self._query(host, rr) for rr in ALLOWED_RRTYPES}
 
             # A CNAME is only a takeover precondition if its target is gone,

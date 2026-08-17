@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -113,7 +114,7 @@ class Verdict(StrEnum):
     NOT_OBSERVABLE = "NOT_OBSERVABLE"
 
 
-@dataclass(slots=True)
+@dataclass
 class Target:
     """The third party under assessment.
 
@@ -135,6 +136,43 @@ class Target:
     declared_extra_eu: bool | None = None
     declared_breach_12m: bool | None = None
     notes: str = ""
+    #: filled by __post_init__; the CLI prints these so a mistyped target file
+    #: cannot pass for a supplier with no attack surface
+    domain_warnings: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.domain_warnings = self.normalise_domains()
+
+    def normalise_domains(self) -> list[str]:
+        """Reduce whatever was written in the target file to bare hostnames.
+
+        A domain pasted from a browser (`https://www.uniroma1.it/en/page`)
+        produced the crt.sh query `%.https://www.uniroma1.it/en/page`, which
+        answers 200 with an empty result set: the run looked successful and
+        found nothing. Normalising here, and reporting what was changed, turns
+        a silent wrong answer into a visible correction.
+        """
+        warnings: list[str] = []
+        cleaned: list[str] = []
+        for original in self.domains:
+            host = str(original).strip().lower()
+            host = re.sub(r"^[a-z][a-z0-9+.-]*://", "", host)   # scheme
+            host = host.split("/")[0].split("?")[0]             # path, query
+            host = host.split("@")[-1].split(":")[0]            # userinfo, port
+            host = host.strip(".")
+            if host.startswith("www."):
+                host = host[4:]          # crt.sh's %.domain already covers www
+            if not host or "." not in host:
+                warnings.append(f"{original!r} is not a usable domain: dropped")
+                continue
+            if host != str(original).strip().lower():
+                warnings.append(f"{original!r} -> {host!r}")
+            if host not in cleaned:
+                cleaned.append(host)
+            elif host == original:
+                warnings.append(f"{original!r} appears more than once: deduplicated")
+        self.domains = cleaned
+        return warnings
 
     @property
     def slug(self) -> str:
@@ -244,6 +282,49 @@ class RunStats:
     timings_ms: dict[str, int] = field(default_factory=dict)
     http: dict[str, int] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    #: stage name -> {"status", "raws", "findings", "errors"}. Populated by the
+    #: runner. Without it a run in which a collector failed is indistinguishable
+    #: from a run in which it found nothing - see `integrity`.
+    stages: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    #: Statuses a stage can end in.
+    OK = "ok"                    # produced data, no errors
+    EMPTY = "empty"              # answered, genuinely nothing to report
+    DEGRADED = "degraded"        # produced data, but some queries failed
+    FAILED = "failed"            # produced nothing AND errored: NOT a clean result
+    SKIPPED_UPSTREAM = "skipped_upstream_failed"   # got no input to work on
+    NOT_IMPLEMENTED = "not_implemented"
+
+    def record_stage(self, name: str, status: str, raws: int = 0, findings: int = 0,
+                     errors: int = 0) -> None:
+        self.stages[name] = {"status": status, "raws": raws,
+                             "findings": findings, "errors": errors}
+
+    @property
+    def integrity(self) -> str:
+        """`complete`, `degraded` or `invalid`.
+
+        This is rule R1 applied to the run itself. A collector that failed
+        produces zero findings, and zero findings look exactly like a clean
+        supplier in the summary line. Marking the run is what stops an aborted
+        crt.sh query from being read as evidence of a small attack surface.
+        `invalid` means the first stage of the technical chain failed, so
+        everything downstream had nothing to work on and no conclusion about
+        that pillar may be drawn at all.
+        """
+        statuses = {n: v["status"] for n, v in self.stages.items()}
+        if statuses.get("crtsh") == self.FAILED:
+            return "invalid"
+        if any(v == self.FAILED for v in statuses.values()):
+            return "invalid"
+        if any(v == self.DEGRADED for v in statuses.values()):
+            return "degraded"
+        return "complete"
+
+    @property
+    def failed_stages(self) -> list[str]:
+        return sorted(n for n, v in self.stages.items()
+                      if v["status"] in (self.FAILED, self.DEGRADED))
 
     def bump(self, key: str, n: int = 1) -> None:
         self.counters[key] = self.counters.get(key, 0) + n
@@ -257,6 +338,8 @@ class RunStats:
             "target": self.target,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "integrity": self.integrity,
+            "stages": self.stages,
             "counters": dict(sorted(self.counters.items())),
             "timings_ms": dict(sorted(self.timings_ms.items())),
             "http": dict(sorted(self.http.items())),

@@ -27,6 +27,21 @@ TEMPLATE = """# Risk Assessment Report - CTI layer (Phase 1 support)
 **Domains in scope:** {{ target.domains | join(', ') }}
 **Run id:** `{{ run_id }}`  **Generated:** {{ generated_at }}
 **Method:** passive OSINT only - no active scanning was performed against the third party.
+{% if stats %}
+**Run integrity:** {{ stats.integrity | upper }}
+{% if stats.integrity != 'complete' %}
+> **This run is incomplete.** Stage(s) {{ stats.failed_stages | join(', ') }} failed or
+> returned partial data. Findings are missing because collection did not complete, not
+> because the third party has nothing to find. No conclusion may be drawn about the
+> affected pillar until the run is repeated.
+>
+> | Stage | Status | Raws | Findings | Errors |
+> |---|---|---|---|---|
+{% for name, st in stats.stages.items() %}
+> | {{ name }} | {{ st.status }} | {{ st.raws }} | {{ st.findings }} | {{ st.errors }} |
+{% endfor %}
+{% endif %}
+{% endif %}
 
 ## 1. Executive summary
 
@@ -120,7 +135,8 @@ timestamp, sha256 of the body). The run is reproducible offline with
 
 
 def render(target: Target, summary: ScoreSummary, config: Config, run_id: str,
-           generated_at: str, projection: dict[str, Any] | None = None) -> str:
+           generated_at: str, projection: dict[str, Any] | None = None,
+           stats: Any | None = None) -> str:
     env = Environment(trim_blocks=True, lstrip_blocks=True)
     non_observable = {
         d.id: (d.cti_note.strip().split("\n")[0] if d.cti_note else "not observable")
@@ -133,6 +149,7 @@ def render(target: Target, summary: ScoreSummary, config: Config, run_id: str,
         run_id=run_id,
         generated_at=generated_at,
         projection=projection,
+        stats=stats,
         observable_count=len([d for d in config.drivers.values() if d.cti_observable]),
         non_observable=non_observable,
         Verdict=Verdict,

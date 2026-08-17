@@ -95,8 +95,22 @@ def test_management_port_escalates_to_moderate(collector, target):
     mgmt = next(f for f in collector.analyze(raws, target)
                 if f.type == "management_service_exposed")
     assert mgmt.signal_strength is SignalStrength.MODERATE
-    assert mgmt.evidence["services"][0]["service"] == "rdp"
+    assert mgmt.evidence["services"] == ["rdp"]
+    assert mgmt.evidence["detail"]["203.0.113.7"]["services"][0]["port"] == 3389
     assert mgmt.needs_followup.value == "next_tool"
+
+
+def test_management_findings_are_aggregated_not_one_per_address(collector, target):
+    """A real run against a large supplier produced 53 findings that all said
+    the same thing. One finding, all addresses in the evidence."""
+    raws = [raw(f"203.0.113.{n}", {"ports": [22, 3389], "vulns": []})
+            for n in range(1, 41)]
+    mgmt = [f for f in collector.analyze(raws, target)
+            if f.type == "management_service_exposed"]
+    assert len(mgmt) == 1
+    assert mgmt[0].evidence["addresses_affected"] == 40
+    assert len(mgmt[0].evidence["detail"]) == 25          # detail is capped
+    assert mgmt[0].evidence["detail_truncated"] == 15
 
 
 def test_ordinary_web_ports_do_not_escalate(collector, target):
