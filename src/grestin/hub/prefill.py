@@ -52,7 +52,7 @@ REVIEW_FILL = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="s
 HEADER_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
 EVIDENCE_SHEET = "CTI Evidence"
 
-SUGGESTION_COLS = {"verdict": 8, "strength": 9, "rationale": 10}   # H, I, J
+SUGGESTION_COLS = {"verdict": 9, "strength": 10, "rationale": 11}   # I, J, K
 HEADER_ROW = 4
 
 

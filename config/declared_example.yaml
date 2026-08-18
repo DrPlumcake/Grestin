@@ -2,3 +2,23 @@
 # Used only to compute the declared-vs-projected delta in the report.
 systems_access: "MAINTENANCE"
 data_classification: "C3 - Confidential"
+
+# Registration identifiers from the procurement file. Without them the corporate
+# pillar tops out at `moderate`: a name is not an identity. The LEI is public and
+# was read from the GLEIF index; the others come from the supplier master data.
+identifiers:
+  leiCode: "549300XXXXXXXXXXXXXX"
+  vatCode: "IT01234567890"
+  registrationNumber: "RM-1234567"
+
+# Answers already given by the compiler in the tool, driver_id -> answer.
+# Used only to compute the declared-vs-projected delta in the report.
+#
+# The two NO answers below are the point of the example: an empty cell and an
+# explicit NO move the projection by the same weight, but only the NO is a
+# dissonance between what the supplier declared and what was observed, and the
+# report has to be able to tell them apart.
+systems_access: "MAINTENANCE"
+data_classification: "C3 - Confidential"
+vuln_exposure_mgmt: "NO"
+data_breach_12m: "NO"

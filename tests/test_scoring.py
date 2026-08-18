@@ -114,6 +114,64 @@ def test_declared_yes_is_not_double_counted(cfg):
     proj = projected_score(summary, cfg, declared)
     assert proj["declared_score"] == 0.11
     assert proj["delta"] == 0.0
+    # neither a contradiction nor a gap: the answer on record already agrees
+    assert proj["contradicted_drivers"] == []
+    assert proj["unanswered_drivers"] == []
+
+
+def test_a_contradicted_no_still_moves_the_projection(cfg):
+    """The flagship case. The compiler answered NO, the layer found a KEV CVE
+    on an exposed service. `read_declared_answers` drops "-" but keeps "NO", so
+    a projection that skipped every driver already present in the declared dict
+    would report a delta of zero on precisely the dissonance the layer exists
+    to surface."""
+    declared = {"vuln_exposure_mgmt": "NO"}
+    summary = score([mk(cfg, "kev_on_exposed_service", Source.KEV, "CVE-1")], cfg)
+    proj = projected_score(summary, cfg, declared)
+    assert proj["declared_score"] == 0.0
+    assert proj["projected_score"] == 0.11
+    assert proj["delta"] == 0.11
+    assert proj["contradicted_drivers"] == ["vuln_exposure_mgmt"]
+    assert proj["unanswered_drivers"] == []
+
+
+def test_a_contradiction_is_reported_apart_from_a_gap(cfg):
+    """Same arithmetic, different follow-up: a contradicted NO is a question to
+    put to the supplier, an empty cell is only an unanswered question."""
+    declared = {"vuln_exposure_mgmt": "NO"}          # ownership left blank
+    findings = [
+        mk(cfg, "kev_on_exposed_service", Source.KEV, "CVE-1"),
+        mk(cfg, "sanctions_match_exact", Source.OPENSANCTIONS, "Acme Holding"),
+    ]
+    proj = projected_score(score(findings, cfg), cfg, declared)
+    assert proj["delta"] == 0.21                      # 0.11 + 0.10
+    assert proj["contradicted_drivers"] == ["vuln_exposure_mgmt"]
+    assert proj["unanswered_drivers"] == ["ownership_due_diligence"]
+
+
+def test_a_contradicted_no_can_be_what_triggers_phase_2(cfg):
+    """The consequence that matters operationally: the supplier's own answers
+    keep it below the Phase 2 threshold, the contradicted drivers push it over."""
+    declared = {"systems_access": "ADMINISTRATIVE ACCESS",
+                "data_classification": "C4 - Strictly Confidential",
+                "operational_continuity": "YES",
+                "vuln_exposure_mgmt": "NO",
+                "data_breach_12m": "NO"}
+    findings = [
+        mk(cfg, "kev_on_exposed_service", Source.KEV, "CVE-1"),
+        mk(cfg, "dls_listing", Source.RANSOMWARE_LIVE, "acme.example"),
+    ]
+    proj = projected_score(score(findings, cfg), cfg, declared)
+    assert proj["declared_score"] == 0.33             # SIGNIFICANT: no Phase 2
+    assert proj["projected_score"] == 0.51            # CRITICAL: Phase 2
+    assert proj["crosses_phase2_threshold"] is True
+    assert sorted(proj["contradicted_drivers"]) == ["data_breach_12m", "vuln_exposure_mgmt"]
+
+
+def test_the_projection_ignores_a_declared_answer_for_an_unknown_driver(cfg):
+    """A stale YAML must not inflate the declared baseline."""
+    proj = projected_score(score([], cfg), cfg, {"driver_that_was_removed": "YES"})
+    assert proj["declared_score"] == 0.0
 
 
 # --- run integrity: R1 applied to the run itself ----------------------------

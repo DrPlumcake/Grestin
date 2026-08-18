@@ -30,7 +30,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..config import Config
+from ..config import Config, Driver
 from ..models import DriverVerdict, Finding, SignalStrength, Verdict
 
 
@@ -212,34 +212,71 @@ def score(findings: Iterable[Finding], config: Config) -> ScoreSummary:
     )
 
 
+def _declared_weight(driver: Driver, answer: str | None) -> float:
+    """The weight one declared answer contributes, mirroring the workbook.
+
+    'Driver Configuration'!G2 is
+        SUM(weight WHERE answer == "YES") + weight(data_classification)
+    so three shapes of answer exist: a weight_map driver (data classification,
+    which always contributes something), a driver with an explicit
+    `risk_values` list (systems access, where the risk condition is one of
+    several access levels), and the plain YES/NO majority.
+
+    This predicate is deliberately the *only* place that knows the workbook's
+    arithmetic, because `projected_score` needs to ask the same question twice
+    - "what does the declared answer contribute?" and "does the CTI suggestion
+    add anything on top?" - and the two answers must not be able to drift.
+    """
+    if answer is None:
+        return 0.0
+    if driver.weight_map:
+        return driver.weight_map.get(answer, 0.0)
+    if driver.risk_values:
+        return (driver.weight or 0.0) if answer in driver.risk_values else 0.0
+    return (driver.weight or 0.0) if str(answer).upper() == "YES" else 0.0
+
+
 def projected_score(summary: ScoreSummary, config: Config,
                     declared_answers: dict[str, str] | None = None) -> dict[str, Any]:
     """What the tool would compute if the compiler accepted every SUGGEST_YES.
 
-    Mirrors 'Driver Configuration'!G2:
-        Supply Risk = SUM(weight WHERE answer == YES) + weight(data_classification)
-
     Presented as a *projection*, side by side with the declared-only score, so
     the report shows the delta the CTI layer would introduce instead of
     silently changing a number.
+
+    The condition for adding a weight is **not** "the compiler has not answered
+    this driver" but "the answer on record does not already carry that weight".
+    The difference is the whole point of the layer: `read_declared_answers`
+    drops empty and "-" cells but keeps an explicit "NO", so under the weaker
+    condition the flagship case - the supplier declares NO and the layer finds
+    evidence to the contrary - would silently project a delta of zero, i.e. the
+    one case the architecture exists to surface would be the one case it could
+    not show. Both cases add the weight; they are reported apart, because a
+    contradicted NO is a question for the supplier while an unanswered cell is
+    only a gap in the questionnaire.
+
+    Drivers scored through a `weight_map` (data classification) are skipped:
+    they always contribute, they are never CTI-observable, and "already at
+    risk" is not defined for them.
     """
     declared = declared_answers or {}
+
     base = 0.0
-    for did, answer in declared.items():
-        d = config.drivers.get(did)
-        if d is None:
-            continue
-        if d.weight_map:
-            base += d.weight_map.get(answer, 0.0)
-        elif d.risk_values:
-            base += d.weight if answer in d.risk_values else 0.0
-        elif str(answer).upper() == "YES":
-            base += d.weight or 0.0
+    for driver_id, driver in config.drivers.items():
+        base += _declared_weight(driver, declared.get(driver_id))
 
     projected = base
+    contradicted: list[str] = []   # declared NO, evidence says otherwise
+    unanswered: list[str] = []     # cell still empty, the layer proposes a value
     for v in summary.suggest_yes:
-        if v.driver_id not in declared and v.weight:
-            projected += v.weight
+        driver = config.drivers.get(v.driver_id)
+        if driver is None or not v.weight or driver.weight_map:
+            continue
+        answer = declared.get(v.driver_id)
+        if _declared_weight(driver, answer) > 0.0:
+            continue               # the weight is already in `base`
+        projected += v.weight
+        (contradicted if answer is not None else unanswered).append(v.driver_id)
 
     return {
         "declared_score": round(base, 4),
@@ -251,4 +288,9 @@ def projected_score(summary: ScoreSummary, config: Config,
             config.risk_level(projected) in ("VERY CRITICAL", "CRITICAL")
             and config.risk_level(base) not in ("VERY CRITICAL", "CRITICAL")
         ),
+        #: SUGGEST_YES on a driver the compiler explicitly answered NO. This is
+        #: the dissonance the thesis is about; the report should name it.
+        "contradicted_drivers": contradicted,
+        #: SUGGEST_YES on a driver left blank: a gap, not a contradiction.
+        "unanswered_drivers": unanswered,
     }
