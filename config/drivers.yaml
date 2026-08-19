@@ -4,7 +4,7 @@
 # PROVENANCE: every id / weight / cell / answer_domain below was read
 # programmatically from `Third Parties Risk Evaluation Tool v2.0.xlsx`,
 # sheets "Driver Configuration" (B4:D17, F13:G17) and "Supply Risk Drivers"
-# (B4:G17, incl. data-validation lists). Do not hand-edit: if the tool
+# (B4:H17, incl. data-validation lists). Do not hand-edit: if the tool
 # changes, re-run `grestin verify-drivers --tool <path>`, which diffs this
 # file against the workbook and fails on any drift.
 #
@@ -21,6 +21,13 @@ meta:
   score_cell: "G2"
   level_cell: "G3"
   answer_sheet: "Supply Risk Drivers"
+  #: First column, 1-based, of the three advisory columns the CTI layer adds to
+  #: the right of the answer column. Derived from `answer_cell` at load time and
+  #: only overridden here if the workbook layout demands it. Keeping it out of
+  #: the code is what stopped the v2.1 layout change - an ENISA 5G column
+  #: inserted before ANSWER, shifting the answers from G to H - from silently
+  #: writing verdicts into the answer cells.
+  suggestion_first_col: null
   weights_sum_check: 1.00   # 0.88 fixed + 0.12 max data classification
 
 risk_levels:                # 'Driver Configuration'!G3 (_xlfn.IFS)
@@ -38,7 +45,7 @@ drivers:
     name: "Information and Network Systems Access"
     category: "DATA ACCESS"
     weight: 0.12
-    answer_cell: "G5"
+    answer_cell: "H5"
     answer_domain: ["-", "MAINTENANCE", "TECHNICAL SUPPORT", "ADMINISTRATIVE ACCESS", "NOT APPLICABLE", "N/A"]
     risk_values: ["MAINTENANCE", "TECHNICAL SUPPORT", "ADMINISTRATIVE ACCESS"]
     fncdp: [GV.SC-04, GV.SC-07, PR.AA-05, DE.CM-06]
@@ -58,7 +65,7 @@ drivers:
       "C2 - Internal Use": 0.04
       "C3 - Confidential": 0.09
       "C4 - Strictly Confidential": 0.12
-    answer_cell: "G6"
+    answer_cell: "H6"
     answer_domain: ["C1 - Public", "C2 - Internal Use", "C3 - Confidential", "C4 - Strictly Confidential"]
     fncdp: [GV.SC-04, GV.SC-07, PR.DS-01, PR.DS-02, DP-ID.RA-11]
     nist_t26: ["§2 High value data, Customer platform connection"]
@@ -72,7 +79,7 @@ drivers:
     name: "Extra-EU Data Transfer or Processing"
     category: "DATA ACCESS"
     weight: 0.05
-    answer_cell: "G7"
+    answer_cell: "H7"
     answer_domain: ["-", "YES", "NO"]
     fncdp: [GV.OC-03, GV.SC-05]
     nist_t26: ["§2 Geopolitical risk, Adversary country", "§6 Onshore development"]
@@ -90,7 +97,7 @@ drivers:
     name: "Golden Power Scope"
     category: "COMPLIANCE OBLIGATIONS"
     weight: 0.05
-    answer_cell: "G8"
+    answer_cell: "H8"
     answer_domain: ["-", "YES", "NO"]
     fncdp: [GV.OC-03, GV.SC-05]
     nist_t26: []
@@ -99,22 +106,15 @@ drivers:
     cti_observable: true
     cti_sources: [opensanctions]
     cti_note: >-
-      PARTIAL. Scope is a legal determination on the supply object. CTI can only
-      surface the extra-EU control/ownership element that makes the D.L. 21/2012
-      notification assessment relevant -> escalate to Legal. Two consequences
-      worth stating: the plan under art. 1-bis(2) covers suppliers that are only
-      *potential*, so this driver is answered before any contract exists, which
-      is why the layer must work without the supplier's cooperation; and the
-      designation of a supplier as high-risk - today national, under the
-      proposed revision of the Cybersecurity Act coordinated at Union level - is
-      a public act, so no passive source can anticipate it and the layer must
-      never appear to.
+      PARTIAL. Scope is a legal determination on the supply object. CTI can
+      only surface the extra-EU control/ownership element that makes the
+      D.L. 21/2012 notification assessment relevant -> escalate to Legal.
 
   - id: nis2_scope
     name: "NIS2 Scope"
     category: "COMPLIANCE OBLIGATIONS"
     weight: 0.05
-    answer_cell: "G9"
+    answer_cell: "H9"
     answer_domain: ["-", "YES", "NO"]
     fncdp: [GV.OC-03, GV.SC-05]
     nist_t26: []
@@ -128,7 +128,7 @@ drivers:
     name: "Vulnerability & Exposure Management Deficiencies"
     category: "SECURITY POSTURE"
     weight: 0.11
-    answer_cell: "G10"
+    answer_cell: "H10"
     answer_domain: ["-", "YES", "NO"]
     fncdp: [GV.SC-07, ID.RA-01, PR.PS-01, PR.PS-02]
     nist_t26: ["§4 HW/SW reviews, Maintenance after deployment, Software baselines",
@@ -148,27 +148,20 @@ drivers:
     name: "Absence of Recognised Security Certifications"
     category: "SECURITY POSTURE"
     weight: 0.04
-    answer_cell: "G11"
+    answer_cell: "H11"
     answer_domain: ["-", "YES", "NO"]
     fncdp: [GV.SC-07, GV.SC-05]
     nist_t26: ["§4 Software baselines, Mandates compliance", "§7 FIPS 140-2, Product integrity standards"]
     enisa_5g: []
     cti_observable: false
-    cti_note: "Documentary evidence, not observable: a certificate plus its scope
-      statement, and for 5G products the GSMA NESAS / 3GPP SCAS test evidence
-      per released version and the NESAS DLA audit of the vendor's development
-      process. Requested in Phase 2. Note that certificate *presence* is
-      sometimes visible in passive sources (a badge on a website, a certificate
-      registry) but presence without a scope statement says nothing about
-      whether the supply is covered, which is why this driver is not treated as
-      CTI-observable rather than treated weakly."
+    cti_note: "Documentary evidence (certificate + scope statement). Phase 2."
 
   # --- SUPPLY CHAIN AND DEPENDENCY ----------------------------------------
   - id: supply_concentration
     name: "Supply Concentration & Substitutability"
     category: "SUPPLY CHAIN AND DEPENDENCY"
     weight: 0.08
-    answer_cell: "G12"
+    answer_cell: "H12"
     answer_domain: ["-", "YES", "NO"]
     fncdp: [GV.SC-04, ID.RA-10]
     nist_t26: ["§2 Sales share, Diffusion, Switching cost, Alternative supplier, Stock reserve"]
@@ -180,7 +173,7 @@ drivers:
     name: "Operational Continuity Criticality & High-Availability Requirements"
     category: "SUPPLY CHAIN AND DEPENDENCY"
     weight: 0.09
-    answer_cell: "G13"
+    answer_cell: "H13"
     answer_domain: ["-", "YES", "NO"]
     fncdp: [GV.SC-04, ID.RA-10, PR.IR-03, PR.IR-04, PR.DS-11]
     nist_t26: ["§2 Essential security function, Compromise leading to failure, Overall criticality"]
@@ -192,7 +185,7 @@ drivers:
     name: "Sub-supplier (Nth-Party) Transparency & Validation"
     category: "SUPPLY CHAIN AND DEPENDENCY"
     weight: 0.06
-    answer_cell: "G14"
+    answer_cell: "H14"
     answer_domain: ["-", "YES", "NO"]
     fncdp: [GV.SC-04, GV.SC-07, GV.SC-05]
     nist_t26: ["§3 Sub-tier ownership & location validated, Threat-scenario vetting, HW/SW list",
@@ -200,20 +193,16 @@ drivers:
     enisa_5g: [Third-party and supply chain; Governance and risk management]
     cti_observable: false
     cti_note: >-
-      Deliberately left to contractual artefacts and to Phase 2: SBOM, DORA
-      register, NIS2 sub-contracting clauses. This is an alignment rather than a
-      concession: under the Cyber Resilience Act (Reg. EU 2024/2847) a
-      machine-readable SBOM becomes part of the mandatory technical
-      documentation from 11 December 2027, and reporting of actively exploited
-      vulnerabilities starts on 11 September 2026, so the artefact this driver
-      needs is one the supplier will be obliged to hold.
+      Deliberately left to contractual artefacts (SBOM, DORA register, NIS2
+      sub-contracting clauses) and Phase 2. Documented future extension:
+      passive DNS / CNAME chains as a weak signal only.
 
   # --- RISK GOVERNANCE -----------------------------------------------------
   - id: ownership_due_diligence
     name: "Ownership Due Diligence & Supplier Integrity"
     category: "RISK GOVERNANCE"
     weight: 0.10
-    answer_cell: "G15"
+    answer_cell: "H15"
     answer_domain: ["-", "YES", "NO"]
     fncdp: [GV.SC-06, ID.RA-10]
     nist_t26: ["§3 Foreign/domestic ownership, Ties to foreign govts, FOCI, Supplier location",
@@ -223,22 +212,15 @@ drivers:
     cti_sources: [opensanctions]
     cti_note: >-
       Corporate pillar. Sanctions / PEP / adverse-media hit or opaque
-      ownership. A name match is never a fact: it always escalates to Legal for
-      adjudication (max strength moderate on fuzzy match, strong only on exact
-      identifier match, which requires that a registration identifier for the
-      counterparty be held in the target file). The ownership graph is walked to
-      a bounded depth of two hops: an incomplete chain is reported as
-      incomplete, never as an absence of control. Regulation (EU) 2026/1386,
-      applicable from 17 January 2028, extends screening to investments made
-      through an EU-established subsidiary of a foreign investor and adopts
-      substantive ultimate-beneficial-owner criteria, which is the direction
-      this driver already points in.
+      ownership. A name match is never a fact: it always escalates to Legal
+      for adjudication (max strength moderate on fuzzy match, strong only on
+      exact identifier match).
 
   - id: data_breach_12m
     name: "Security Incidents / Data Breach (past 12 months)"
     category: "RISK GOVERNANCE"
     weight: 0.07
-    answer_cell: "G16"
+    answer_cell: "H16"
     answer_domain: ["-", "YES", "NO"]
     fncdp: [GV.SC-07, GV.SC-08]
     nist_t26: ["§7 Fines or sanctions past year, Litigation past year, PSRT programme, Incident notification"]
@@ -254,7 +236,7 @@ drivers:
     name: "TPRM History / Legacy Risk"
     category: "RISK GOVERNANCE"
     weight: 0.06
-    answer_cell: "G17"
+    answer_cell: "H17"
     answer_domain: ["-", "YES", "NO"]
     fncdp: [GV.SC-06, ID.RA-06]
     nist_t26: ["§4 Risk mitigation activities recorded and tracked"]

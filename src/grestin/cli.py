@@ -127,6 +127,7 @@ def run(args: argparse.Namespace) -> int:
                       file=sys.stderr)
                 continue
             errors_before = len(stats.errors)
+            failures_before = stats.http.get("failures", 0)
             t0 = time.monotonic()
             collector = cls(client, config, stats)
             collector.inputs = handoff          # output of the previous stage
@@ -140,6 +141,13 @@ def run(args: argparse.Namespace) -> int:
             findings += fs
             stats.record_stage(name, _status(len(raws), len(stats.errors) - errors_before),
                                len(raws), len(fs), len(stats.errors) - errors_before)
+            if raws and not fs and failures_before != stats.http.get("failures", 0):
+                # Answered, produced nothing, and lost at least one request on
+                # the way. The stage cannot distinguish an endpoint that
+                # returned an empty body from one it never reached, so say so
+                # instead of letting the summary read as a clean supplier.
+                print(f"  [warn] {name}: no observations, and {stats.http.get('failures', 0) - failures_before}"
+                      " request(s) failed", file=sys.stderr)
             if name == "crtsh":
                 handoff = collector.resolvable_hosts(raws, target)
                 stats.bump("crtsh.hosts_for_dns", len(handoff))

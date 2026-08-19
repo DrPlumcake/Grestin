@@ -3,25 +3,36 @@
 TWO MODES, and the default is the conservative one.
 
 `suggestion` (default) - the layer does not touch the answer column at all. It
-adds three columns beside it (H, I, J of 'Supply Risk Drivers') holding the
-proposed verdict, the signal strength and the rationale, plus a `CTI Evidence`
-sheet with the run summary. The person compiling the questionnaire reads the
-suggestion next to the question and answers column G themselves. This mirrors
+adds three columns immediately to the right of the answer column of 'Supply
+Risk Drivers', holding the proposed verdict, the signal strength and the
+rationale, plus a `CTI Evidence` sheet with the run summary. The person
+compiling the questionnaire reads the suggestion next to the question and
+answers the answer column themselves. This mirrors
 how the process actually works: Phase 1 is filled in by internal functions
 (Procurement, the Requesting function, Security), not by the supplier, and the
 signature on that cell must stay human.
 
-`answers` (--write-answers) - additionally writes `YES` into column G for every
+`answers` (--write-answers) - additionally writes `YES` into the answer column
+for every
 SUGGEST_YES verdict, with a cell comment carrying the evidence. Useful for the
 demo, because it makes the score move on screen; not what you would deploy.
 
 CONSTRAINTS DISCOVERED IN THE WORKBOOK
 
-  1. The only input cells are 'Supply Risk Drivers'!G5:G17. Column C of
+  1. The only input cells are the answer column of 'Supply Risk Drivers', rows
+     5 to 17 (column H since tool v2.1, G before it). Column C of
      'Driver Configuration' is derived, so writing there destroys the model.
-  2. Each G cell carries a data-validation list, so a written value must belong
-     to the driver's `answer_domain` in drivers.yaml. G5 and G6 are not YES/NO
-     at all, and the layer never proposes a value for them.
+  2. Each answer cell carries a data-validation list, so a written value must
+     belong to the driver's `answer_domain` in drivers.yaml. The first two rows
+     - systems access and data classification - are not YES/NO at all, and the
+     layer never proposes a value for them.
+  2b. The answer column is NOT hardcoded. v2.1 of the tool inserted an
+     "ENISA 5G Security Controls Matrix" column before ANSWER, moving the
+     answers from G to H. Had the three advisory columns stayed pinned to H, I,
+     J, this module would have written verdict strings straight into the answer
+     cells - past the data validation, into a column the score formula reads.
+     They are therefore derived from `answer_cell`, and a layout change is now
+     one edit in drivers.yaml.
   3. The original workbook computes the score with `_xlfn._xlws.FILTER`, which
      LibreOffice cannot evaluate (it has no dynamic arrays): opened there, G2
      and G3 read #VALUE!. That is a property of the tool, not of this code.
@@ -41,6 +52,7 @@ from typing import Any
 from openpyxl import load_workbook
 from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import column_index_from_string
 from openpyxl.worksheet.formula import ArrayFormula
 
 from ..config import Config
@@ -52,8 +64,25 @@ REVIEW_FILL = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="s
 HEADER_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
 EVIDENCE_SHEET = "CTI Evidence"
 
-SUGGESTION_COLS = {"verdict": 9, "strength": 10, "rationale": 11}   # I, J, K
 HEADER_ROW = 4
+SUGGESTION_KEYS = ("verdict", "strength", "rationale")
+
+
+def suggestion_cols(config: Config) -> dict[str, int]:
+    """The three advisory columns, immediately right of the answer column.
+
+    Derived rather than hardcoded: see constraint 2b above. `meta.
+    suggestion_first_col` in drivers.yaml overrides the derivation if a future
+    layout ever puts something else in the way.
+    """
+    override = config.meta.get("suggestion_first_col")
+    if override:
+        first = int(override)
+    else:
+        cell = next(iter(config.drivers.values())).answer_cell
+        letters = "".join(c for c in cell if c.isalpha())
+        first = column_index_from_string(letters) + 1
+    return {key: first + i for i, key in enumerate(SUGGESTION_KEYS)}
 
 
 def working_copy(template: str | Path, tool_dir: str | Path, slug: str,
@@ -85,7 +114,7 @@ def working_copy(template: str | Path, tool_dir: str | Path, slug: str,
     ws = wb[config.meta["answer_sheet"]]
     for driver in config.drivers.values():
         ws[driver.answer_cell] = "-"
-    for col in SUGGESTION_COLS.values():             # drop stale CTI columns
+    for col in suggestion_cols(config).values():      # drop stale CTI columns
         for row in range(HEADER_ROW, HEADER_ROW + 15):
             ws.cell(row=row, column=col).value = None
     if EVIDENCE_SHEET in wb.sheetnames:
@@ -143,7 +172,8 @@ def prefill(
     wb = load_workbook(out_path)                  # keep formulas: no data_only
     answers = wb[config.meta["answer_sheet"]]
 
-    _write_suggestion_header(answers)
+    cols = suggestion_cols(config)
+    _write_suggestion_header(answers, cols)
 
     suggested: list[dict[str, Any]] = []
     answered: list[dict[str, Any]] = []
@@ -156,11 +186,11 @@ def prefill(
             continue
 
         # --- always: the advisory columns, next to the question -----------
-        cell = answers.cell(row=row, column=SUGGESTION_COLS["verdict"], value=v.verdict.value)
+        cell = answers.cell(row=row, column=cols["verdict"], value=v.verdict.value)
         cell.fill = CTI_FILL if v.verdict is Verdict.SUGGEST_YES else REVIEW_FILL
-        answers.cell(row=row, column=SUGGESTION_COLS["strength"],
+        answers.cell(row=row, column=cols["strength"],
                      value=v.max_strength.value if v.max_strength else None)
-        rationale = answers.cell(row=row, column=SUGGESTION_COLS["rationale"],
+        rationale = answers.cell(row=row, column=cols["rationale"],
                                  value=_rationale_text(v, run_id))
         rationale.alignment = Alignment(wrap_text=True, vertical="top")
         suggested.append({"driver": v.driver_id, "row": row, "verdict": v.verdict.value})
@@ -203,11 +233,11 @@ def prefill(
     }
 
 
-def _write_suggestion_header(ws) -> None:
+def _write_suggestion_header(ws, cols: dict[str, int]) -> None:
     bold = Font(bold=True, name="Arial")
     labels = {"verdict": "CTI SUGGESTION", "strength": "SIGNAL", "rationale": "CTI EVIDENCE"}
     widths = {"verdict": 18, "strength": 12, "rationale": 80}
-    for key, col in SUGGESTION_COLS.items():
+    for key, col in cols.items():
         cell = ws.cell(row=HEADER_ROW, column=col, value=labels[key])
         cell.font = bold
         cell.fill = HEADER_FILL

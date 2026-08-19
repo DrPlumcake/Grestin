@@ -55,11 +55,18 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 
-#: Counter -> column heading for the technical funnel. Order is the order of the
-#: chain, which is the point of the table: every column can only shrink.
+#: Counter -> column heading for the technical chain, in stage order.
+#:
+#: The counts are NOT monotonically decreasing, and the table must not be
+#: presented as if they were. Two effects break it. `hosts_observed` and
+#: `hosts_for_dns` count different populations: the first is the set of names
+#: seen in certificates, the second the set actually handed to the resolver,
+#: which expands wildcards and adds the apex domains. And one name resolves to
+#: many addresses behind a CDN, so unique IPs routinely exceed resolved hosts.
+#: What narrows along the chain is relevance, not cardinality.
 FUNNEL = [
-    ("crtsh.hosts_observed", "CT hosts"),
-    ("crtsh.hosts_for_dns", "to DNS"),
+    ("crtsh.hosts_observed", "CT names"),
+    ("crtsh.hosts_for_dns", "to resolver"),
     ("dns.hosts_resolved", "resolved"),
     ("dns.unique_ips", "unique IPs"),
     ("shodan.addresses_with_data", "in Shodan"),
@@ -236,10 +243,13 @@ def t_inventory(runs: list[Run]) -> str:
 def t_funnel(runs: list[Run]) -> str:
     headers = ["Target", *[h for _, h in FUNNEL]]
     rows = [[r.label, *[r.counter(k) for k, _ in FUNNEL]] for r in runs]
-    return ("### 2. Technical pillar: the funnel\n\n"
-            "Each column can only be smaller than the one before it. That is "
-            "what makes the pillar a chain: nothing downstream is meaningful "
-            "without its upstream anchor.\n\n"
+    return ("### 2. Technical pillar: stage by stage\n\n"
+            "Stage order, left to right. The counts do not decrease "
+            "monotonically: one name resolves to several addresses behind a "
+            "CDN, and the resolver receives the wildcard expansions and apex "
+            "domains on top of the names observed in certificates. What "
+            "narrows along the chain is relevance, since nothing downstream is "
+            "meaningful without its upstream anchor.\n\n"
             + table(headers, rows)
             + "\n"
             + table(["Target", *[h for _, h in INDEPENDENT]],

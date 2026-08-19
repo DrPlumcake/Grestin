@@ -8,7 +8,7 @@ can evaluate:
 
     'Driver Configuration'!G2 = IFERROR(SUM(_xlfn._xlws.FILTER(D5:D17,
                                         C5:C17="YES","-")),"-") + D6
-    'Driver Configuration'!C7 = 'Supply Risk Drivers'!G7:G17      (spilled)
+    'Driver Configuration'!C7 = 'Supply Risk Drivers'!H7:H17      (spilled)
     'Driver Configuration'!G3 = _xlfn.IFS(G2>=75%,"VERY CRITICAL", ...)
 
 FILTER is a dynamic-array function; LibreOffice Calc has no dynamic arrays, so
@@ -49,17 +49,36 @@ SCORE_SHEET = "Driver Configuration"
 ANSWER_SHEET = "Supply Risk Drivers"
 FIRST_ROW, LAST_ROW = 5, 17
 
+#: Answer column of 'Supply Risk Drivers'. H since tool v2.1, which inserted an
+#: "ENISA 5G Security Controls Matrix" column before ANSWER; G before that. Read
+#: from drivers.yaml when it can be found, so this tool cannot drift from the
+#: config the rest of the project uses.
+ANSWER_COL = "H"
+
+
+def _answer_col() -> str:
+    """Answer column from config/drivers.yaml, falling back to the constant."""
+    cfg = Path(__file__).resolve().parents[1] / "config" / "drivers.yaml"
+    try:
+        import yaml
+        data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+        cell = data["drivers"][0]["answer_cell"]
+        return "".join(c for c in cell if c.isalpha())
+    except Exception:                                # noqa: BLE001 - best effort
+        return ANSWER_COL
+
 
 def convert(src: Path, dst: Path) -> dict[str, str]:
     shutil.copyfile(src, dst)
     wb = load_workbook(dst)
     ws = wb[SCORE_SHEET]
     changed: dict[str, str] = {}
+    answer_col = _answer_col()
 
     # 1. the spilled range becomes one reference per row.
     #    Rows 5 and 6 already hold their own formulas and are left alone.
     for row in range(7, LAST_ROW + 1):
-        formula = f"='{ANSWER_SHEET}'!G{row}"
+        formula = f"='{ANSWER_SHEET}'!{answer_col}{row}"
         ws.cell(row=row, column=3, value=formula)
         changed[f"C{row}"] = formula
 

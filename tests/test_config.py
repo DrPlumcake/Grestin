@@ -68,10 +68,34 @@ def test_only_declared_tools_can_reach_strong():
 
 
 def test_answer_cells_are_unique_and_in_the_answer_column():
+    """All thirteen answers live in one column, whichever column that is.
+
+    Pinning the letter was a mistake: tool v2.1 inserted an ENISA 5G column
+    before ANSWER and the answers moved from G to H. What matters is not which
+    letter it is but that there is exactly one - the moment two drivers sit in
+    different columns, the advisory columns derived from `answer_cell` would
+    land on top of a populated cell for at least one of them."""
     cfg = Config.load()
     cells = [d.answer_cell for d in cfg.drivers.values()]
     assert len(set(cells)) == len(cells)
-    assert all(c.startswith("G") for c in cells)
+    columns = {"".join(c for c in cell if c.isalpha()) for cell in cells}
+    assert len(columns) == 1, f"answers spread across columns: {sorted(columns)}"
+
+
+def test_suggestion_columns_sit_to_the_right_of_the_answers():
+    """The three advisory columns must never overlap the answer column: that
+    would write verdict strings past the data validation and into the range the
+    score formula reads."""
+    from openpyxl.utils import column_index_from_string
+
+    from grestin.hub.prefill import suggestion_cols
+
+    cfg = Config.load()
+    answer_col = column_index_from_string(
+        "".join(c for c in next(iter(cfg.drivers.values())).answer_cell if c.isalpha()))
+    cols = suggestion_cols(cfg)
+    assert min(cols.values()) > answer_col
+    assert sorted(cols.values()) == list(range(answer_col + 1, answer_col + 4))
 
 
 def test_sensitive_hostname_matching():

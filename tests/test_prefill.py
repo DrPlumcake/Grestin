@@ -2,7 +2,9 @@
 mistake damages the instrument the whole process depends on. These tests pin
 the three invariants:
 
-  1. only 'Supply Risk Drivers'!G5:G17 is written;
+  1. only 'Supply Risk Drivers'!H5:H17 is written (H since tool v2.1, which
+     inserted an ENISA 5G column before ANSWER: the advisory columns moved
+     with it, from H,I,J to I,J,K);
   2. the array formula in 'Driver Configuration'!G2 and the data validations
      survive the openpyxl round-trip;
   3. REVIEW never becomes an answer, and an already-filled cell is never
@@ -58,11 +60,11 @@ def test_default_mode_never_touches_the_answer_column(tmp_path, cfg, summary):
     answers = load_workbook(out)[cfg.meta["answer_sheet"]]
     assert result["mode"] == "suggestion"
     assert result["cells_written"] == []
-    assert answers["G10"].value in (None, "-")          # answer untouched
-    assert answers["H10"].value == "SUGGEST_YES"        # advice present
-    assert answers["I10"].value == "strong"
-    assert "kev_on_exposed_service" in answers["J10"].value
-    assert answers["H15"].value == "REVIEW"
+    assert answers["H10"].value in (None, "-")          # answer untouched
+    assert answers["I10"].value == "SUGGEST_YES"        # advice present
+    assert answers["J10"].value == "strong"
+    assert "kev_on_exposed_service" in answers["K10"].value
+    assert answers["I15"].value == "REVIEW"
 
 
 def test_writes_only_suggest_yes_answers(tmp_path, cfg, summary):
@@ -72,13 +74,13 @@ def test_writes_only_suggest_yes_answers(tmp_path, cfg, summary):
 
     wb = load_workbook(out)
     answers = wb[cfg.meta["answer_sheet"]]
-    # vuln_exposure_mgmt -> G10, SUGGEST_YES on a strong KEV signal
-    assert answers["G10"].value == "YES"
-    assert answers["G10"].comment is not None
-    assert "SUGGEST_YES" in answers["G10"].comment.text
-    # ownership_due_diligence -> G15, only REVIEW: advised in H, never answered in G
-    assert answers["G15"].value in (None, "-")
-    assert answers["H15"].value == "REVIEW"
+    # vuln_exposure_mgmt -> H10, SUGGEST_YES on a strong KEV signal
+    assert answers["H10"].value == "YES"
+    assert answers["H10"].comment is not None
+    assert "SUGGEST_YES" in answers["H10"].comment.text
+    # ownership_due_diligence -> H15, only REVIEW: advised in I, never answered in H
+    assert answers["H15"].value in (None, "-")
+    assert answers["I15"].value == "REVIEW"
     assert [w["driver"] for w in result["cells_written"]] == ["vuln_exposure_mgmt"]
 
 
@@ -105,19 +107,19 @@ def test_scoring_model_and_validations_survive(tmp_path, cfg, summary):
     assert cfg.meta["answer_sheet"] in _formula(dc["C7"].value)
 
     ranges = {str(dv.sqref) for dv in wb[cfg.meta["answer_sheet"]].data_validations.dataValidation}
-    assert {"G5", "G6", "G7:G17"} <= ranges
+    assert {"H5", "H6", "H7:H17"} <= ranges
 
 
 def test_never_overwrites_an_existing_answer(tmp_path, cfg, summary):
     seeded = tmp_path / "seeded.xlsx"
     shutil.copyfile(TOOL, seeded)
     wb = load_workbook(seeded)
-    wb[cfg.meta["answer_sheet"]]["G10"] = "NO"      # the compiler already decided
+    wb[cfg.meta["answer_sheet"]]["H10"] = "NO"      # the compiler already decided
     wb.save(seeded)
 
     out = tmp_path / "prefilled.xlsx"
     result = prefill(seeded, out, summary, cfg, "Acme", "TEST03", write_answers=True)
-    assert load_workbook(out)[cfg.meta["answer_sheet"]]["G10"].value == "NO"
+    assert load_workbook(out)[cfg.meta["answer_sheet"]]["H10"].value == "NO"
     assert any("already filled" in f["reason"] for f in result["cells_flagged"])
 
 
@@ -147,4 +149,4 @@ def test_non_boolean_driver_is_never_answered(tmp_path, cfg):
             assert v.verdict is Verdict.NOT_OBSERVABLE
     out = tmp_path / "p.xlsx"
     prefill(TOOL, out, s, cfg, "Acme", "TEST06", write_answers=True)
-    assert load_workbook(out)[cfg.meta["answer_sheet"]]["G5"].value == "MAINTENANCE"
+    assert load_workbook(out)[cfg.meta["answer_sheet"]]["H5"].value == "MAINTENANCE"

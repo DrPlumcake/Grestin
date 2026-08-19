@@ -319,6 +319,14 @@ class RunStats:
             return "invalid"
         if any(v == self.DEGRADED for v in statuses.values()):
             return "degraded"
+        #: A request that exhausted its retries is a hole in the collection even
+        #: when the stage recovered through a fallback interface and recorded no
+        #: error of its own. The stage statuses above cannot see it, because the
+        #: HTTP client counts the failure and the collector only reports what it
+        #: could not work around. Reading `http` here is what stops a run with
+        #: an unreachable endpoint from being presented as a complete one.
+        if self.http.get("failures") or self.http.get("transport_errors"):
+            return "degraded"
         return "complete"
 
     @property

@@ -198,6 +198,31 @@ def test_a_stage_that_answered_with_nothing_is_not_a_failure():
     assert stats.failed_stages == []
 
 
+def test_an_http_failure_no_stage_reported_still_downgrades_the_run():
+    """A request that exhausted its retries is a hole in the collection even
+    when the collector routed around it through a fallback interface and
+    recorded no error of its own. The stage statuses cannot see that, so a run
+    with an unreachable endpoint would otherwise be presented as complete and
+    its zero findings read as a clean supplier."""
+    from grestin.models import RunStats
+
+    stats = RunStats(run_id="x", target="y")
+    stats.record_stage("crtsh", RunStats.OK, raws=1, findings=0)
+    assert stats.integrity == "complete"
+    stats.http["failures"] = 2
+    assert stats.integrity == "degraded"
+
+
+def test_a_failed_stage_outranks_an_http_failure():
+    """Degrading is the weaker verdict: it must not mask an invalid run."""
+    from grestin.models import RunStats
+
+    stats = RunStats(run_id="x", target="y")
+    stats.record_stage("crtsh", RunStats.FAILED, raws=0, findings=0, errors=1)
+    stats.http["failures"] = 1
+    assert stats.integrity == "invalid"
+
+
 def test_partial_data_marks_the_run_degraded():
     from grestin.models import RunStats
 

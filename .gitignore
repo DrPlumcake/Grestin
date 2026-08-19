@@ -17,3 +17,4 @@ config/targets/*
 !config/targets/.gitkeep
 
 tool/
+docs/
