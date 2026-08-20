@@ -86,6 +86,27 @@ def _why(stage: dict) -> str:
     return ""
 
 
+
+def _stage_note(name: str, target, handoff: list[str]) -> str:
+    """One line saying what the stage is about to do, printed before it starts.
+
+    crt.sh answers a very large PostgreSQL instance and a query on a busy domain
+    takes minutes; ransomware.live and OpenSanctions are quick but silent. A run
+    that opens on an empty terminal for two minutes is indistinguishable from a
+    hung one, and the person waiting has no way to tell which.
+    """
+    domains = ", ".join(target.domains) if target.domains else "no domain"
+    return {
+        "crtsh": f"querying certificate transparency for {domains} "
+                 "(crt.sh can take minutes on a large domain)",
+        "dns": f"resolving {len(handoff)} hostname(s)",
+        "shodan": f"looking up {len(handoff)} address(es) in InternetDB",
+        "vulns": f"checking {len(handoff)} CVE(s) against NVD, EPSS and KEV",
+        "opensanctions": f"screening {target.legal_name!r} against "
+                         "sanctions, PEP and adverse-media datasets",
+        "ransomware_live": f"searching leak-site listings for {target.legal_name!r}",
+    }.get(name, "running")
+
 def run(args: argparse.Namespace) -> int:
     config = Config.load(args.config_dir)
     target = load_target(args.target)
@@ -145,6 +166,11 @@ def run(args: argparse.Namespace) -> int:
             errors_before = len(stats.errors)
             failures_before = stats.http.get("failures", 0)
             t0 = time.monotonic()
+            # Stage 1 has no progress bar to show: it issues two queries against
+            # a service that can legitimately take minutes, so without this line
+            # the run opens on a blank terminal and looks hung.
+            print(f"  [..]   {name}: {_stage_note(name, target, handoff)}",
+                  file=sys.stderr, flush=True)
             collector = cls(client, config, stats)
             collector.inputs = handoff          # output of the previous stage
             for limit in LIMITS:                # honour the CLI budget caps
@@ -194,6 +220,8 @@ def run(args: argparse.Namespace) -> int:
                 continue
             t0 = time.monotonic()
             errors_before = len(stats.errors)
+            print(f"  [..]   {name}: {_stage_note(name, target, [])}",
+                  file=sys.stderr, flush=True)
             collector = cls(client, config, stats)
             raws, fs = collector.run(target)         # no handoff: independent by design
             stats.timing(f"pillar:{name}", int((time.monotonic() - t0) * 1000))
@@ -260,10 +288,26 @@ def run(args: argparse.Namespace) -> int:
               "invalid": "  [INCOMPLETE RUN - DO NOT READ AS A CLEAN RESULT]"}
     print(f"\nTarget: {target.legal_name}{banner[stats.integrity]}")
     if stats.integrity != "complete":
-        print(f"Integrity: {stats.integrity} - failed or partial stage(s): "
-              f"{', '.join(stats.failed_stages)}")
-        print("The absence of findings below reflects a failed collection, not the "
-              "third party. Re-run before drawing any conclusion.")
+        # Name the reason. A run degraded only because the HTTP client lost a
+        # request has no failed stage to list, and printing an empty list after
+        # "failed stage(s):" reads as a bug in the tool rather than as a hole in
+        # the collection.
+        if stats.failed_stages:
+            print(f"Integrity: {stats.integrity} - failed or partial stage(s): "
+                  f"{', '.join(stats.failed_stages)}")
+        else:
+            lost = (stats.http.get("failures", 0), stats.http.get("transport_errors", 0))
+            print(f"Integrity: {stats.integrity} - every stage answered, but "
+                  f"{lost[0]} request(s) exhausted their retries and "
+                  f"{lost[1]} transport error(s) were recovered from. Some "
+                  "observations may be missing.")
+        # Only alarming when there is in fact nothing to read.
+        if not findings:
+            print("The absence of findings below reflects a failed collection, not "
+                  "the third party. Re-run before drawing any conclusion.")
+        else:
+            print("The findings below are incomplete. Treat the absence of a "
+                  "finding as unknown rather than as clean.")
     print(f"Findings: {len(findings)} | SUGGEST_YES: {len(summary.suggest_yes)} | "
           f"REVIEW: {len(summary.review)}")
     print(f"Addressable weight: {summary.addressable_weight:.0%} | "

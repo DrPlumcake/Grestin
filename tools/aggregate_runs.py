@@ -106,19 +106,30 @@ class Run:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self.unreadable: list[str] = []
         self.stats = self._load("stats.json", {})
         self.verdicts = self._load("verdicts.json", {})
         self.findings = self._load("findings.json", [])
         self.label = self.stats.get("target") or path.name
 
     def _load(self, name: str, default: Any) -> Any:
+        """Missing or malformed files are recorded, never silently defaulted.
+
+        An unreadable `findings.json` would otherwise reach the inventory as a
+        run with zero findings, which is the same misreading the run integrity
+        rule exists to prevent: nothing observed and nothing readable look
+        identical once both are printed as 0.
+        """
         p = self.path / name
         if not p.is_file():
+            self.unreadable.append(f"{name} missing")
+            print(f"[warn] {p}: file not found", file=sys.stderr)
             return default
         try:
             return json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            print(f"[warn] {p}: {exc}", file=sys.stderr)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            self.unreadable.append(f"{name} unreadable")
+            print(f"[warn] {p}: {type(exc).__name__}: {exc}", file=sys.stderr)
             return default
 
     # -- accessors ---------------------------------------------------------
@@ -223,21 +234,27 @@ def t_inventory(runs: list[Run]) -> str:
     rows = []
     for r in runs:
         counts = (r.verdicts.get("counts") or {})
+        broken = "findings.json" in " ".join(r.unreadable)
         rows.append([
             r.label, r.run_id,
             *([getattr(r, "role", "") or "-"] if show_role else []),
             r.integrity,
             ", ".join(r.failed_stages) or "-",
-            len(r.findings),
+            "n/a" if broken else len(r.findings),
             counts.get("suggest_yes"),
             counts.get("review"),
             r.findings_digest,
         ])
+    unreadable = [f"`{r.path.name}`: {', '.join(r.unreadable)}"
+                  for r in runs if r.unreadable]
+    warning = ("\n> **Incomplete input.** " + "; ".join(unreadable) +
+               ". Rows marked `n/a` could not be read and say nothing about the "
+               "target.\n") if unreadable else ""
     return ("### 1. Run inventory and integrity\n\n"
             "`Digest` is a SHA-256 prefix over the findings with `id` and "
             "`observed_at` removed: it is identical for a run and its offline "
             "replay, and that identity is the reproducibility claim.\n\n"
-            + table(headers, rows))
+            + table(headers, rows) + warning)
 
 
 def t_funnel(runs: list[Run]) -> str:

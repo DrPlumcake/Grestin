@@ -101,21 +101,35 @@ class OpenSanctionsCollector(BaseCollector):
         return [str(t) for t in cls._props(entity).get("topics", []) or []]
 
     @classmethod
-    def _has_identifier_match(cls, entity: dict[str, Any], target: Target) -> bool:
-        """True only if the candidate shares a registration identifier with what
-        we know about the counterparty. Deliberately conservative: with no
-        identifier on our side, this is always False and `strong` is
-        unreachable, which is the correct outcome for a name-only screening."""
-        known = {str(v).replace(" ", "").upper()
-                 for v in (target.identifiers or {}).values() if v}
+    def _identifier_match(cls, entity: dict[str, Any],
+                          target: Target) -> tuple[str, str] | None:
+        """The identifier the candidate shares with the counterparty, if any.
+
+        Returns the property that matched and the normalised value, so the
+        finding can record *which* identifier established the identity rather
+        than only that one did. A reader of the evidence, or of the annex of the
+        thesis, can then tell a Legal Entity Identifier match from a match on a
+        national company-register number, which do not carry the same weight.
+
+        Deliberately conservative: with no identifier on our side this returns
+        None and `strong` is unreachable, which is the correct outcome for a
+        screening carried out on a name alone.
+        """
+        known = {str(v).replace(" ", "").upper(): k
+                 for k, v in (target.identifiers or {}).items() if v}
         if not known:
-            return False
+            return None
         props = cls._props(entity)
         for prop in IDENTIFIER_PROPS:
             for value in props.get(prop, []) or []:
-                if str(value).replace(" ", "").upper() in known:
-                    return True
-        return False
+                normalised = str(value).replace(" ", "").upper()
+                if normalised in known:
+                    return prop, normalised
+        return None
+
+    @classmethod
+    def _has_identifier_match(cls, entity: dict[str, Any], target: Target) -> bool:
+        return cls._identifier_match(entity, target) is not None
 
     def _lookup_entity(self, entity_id: str) -> dict[str, Any] | None:
         try:
@@ -244,19 +258,35 @@ class OpenSanctionsCollector(BaseCollector):
                 }
 
                 if any(t in topics for t in TOPIC_SANCTION):
-                    identified = (result.get("match") is True
-                                  and self._has_identifier_match(result, target))
+                    matched = (self._identifier_match(result, target)
+                               if result.get("match") is True else None)
+                    identified = matched is not None
                     self.bump("sanction_candidates")
+                    if identified:
+                        self.bump(f"identifier_match.{matched[0]}")
                     findings.append(self.config.make_finding(
                         type="sanctions_match_exact" if identified else "sanctions_match_fuzzy",
                         source=Source.OPENSANCTIONS,
                         subject=f"{result.get('caption')} ({result.get('id')})",
-                        evidence=base | {"identifier_match": identified},
+                        evidence=base | {
+                            "identifier_match": identified,
+                            "matched_identifier": matched[0] if identified else None,
+                            "matched_value": matched[1] if identified else None,
+                            #: Which authority listed the candidate. The topic
+                            #: alone does not say under whose law: a listing may
+                            #: be an export-control or procurement measure of a
+                            #: third country rather than a sanction in force in
+                            #: the Union, and the two do not carry the same legal
+                            #: consequences for the acquirer.
+                            "listing_topics": sorted(topics),
+                        },
                         strength=(SignalStrength.STRONG if identified
                                   else SignalStrength.MODERATE),
-                        note=("identifier match: the candidate shares a registration "
-                              "identifier with the counterparty"
-                              if identified else
+                        note=(f"identity established on {matched[0]}: the candidate "
+                              "shares this registration identifier with the "
+                              "counterparty. The datasets naming it, and the law "
+                              "under which each listing was made, are for Legal to "
+                              "weigh" if identified else
                               "name similarity only: no shared registration identifier, "
                               "so the candidate cannot be treated as identified"),
                     ))

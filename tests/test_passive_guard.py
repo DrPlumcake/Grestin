@@ -105,3 +105,34 @@ def test_allowlist_has_one_entry_per_declared_tool():
     for marker in ("crt.sh", "shodan", "nvd.nist.gov", "first.org",
                    "cisa.gov", "opensanctions", "ransomware.live"):
         assert marker in joined, f"{marker} missing from the passive allowlist"
+
+
+def test_a_404_is_stored_and_replayed_as_a_404(tmp_path):
+    """A client error is an answer, not a gap.
+
+    ransomware.live returns 404 for a name it holds no listing for, and the
+    collector reads that as "no listing" and records a Raw. If the store keeps
+    only successful responses, the replay of the same run meets a cache miss
+    instead, the collector raises, and a stage that originally succeeded is
+    reported as a failed collection. Every clean supplier hits this path, so
+    without it no run of a clean supplier is replayable.
+    """
+    import httpx
+    import respx
+
+    from grestin.http import EvidenceStore, PassiveClient
+
+    store = EvidenceStore(tmp_path, run_id="R1")
+    url = "https://api.ransomware.live/v2/searchvictims/acme"
+
+    with respx.mock:
+        respx.get(url).mock(return_value=httpx.Response(404))
+        with PassiveClient(evidence=store) as client, pytest.raises(httpx.HTTPStatusError):
+            client.get_json(url)
+
+    # The 404 is now on disk, and the offline replay raises the same error
+    # rather than CacheMiss.
+    with PassiveClient(evidence=EvidenceStore(tmp_path, run_id="R2"),
+                       offline=True) as replay, pytest.raises(httpx.HTTPStatusError) as exc:
+        replay.get_json(url)
+    assert exc.value.response.status_code == 404

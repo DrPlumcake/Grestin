@@ -318,6 +318,18 @@ class PassiveClient:
             cached = self.evidence.lookup(key_url)
             if cached is not None:
                 self._count("cache_hits")
+                if 400 <= int(cached.get("status", 200)) < 500:
+                    # A stored client error is replayed as the error it was.
+                    # The collectors read a 404 as "this API holds nothing on
+                    # that subject", which is an observation and not a fault, so
+                    # the replay has to reproduce it rather than report a gap.
+                    self._count("cached_client_errors")
+                    raise httpx.HTTPStatusError(
+                        f"{cached['status']} from cache for {key_url}",
+                        request=httpx.Request("GET", url),
+                        response=httpx.Response(int(cached["status"]),
+                                                request=httpx.Request("GET", url)),
+                    )
                 return cached["body"], EvidenceRecord(
                     EvidenceStore.key(key_url), key_url, cached["status"],
                     cached["retrieved_at"], str(self.evidence.blob_path(key_url)),
@@ -362,6 +374,18 @@ class PassiveClient:
                         f"{resp.status_code} from {host}", request=resp.request, response=resp
                     )
                     continue
+
+                if 400 <= resp.status_code < 500:
+                    # Stored before raising. "No listing for this name" and "no
+                    # data for this address" are answers, and an evidence store
+                    # that keeps only the positive ones cannot replay a run: the
+                    # negative answers would come back as cache misses and the
+                    # stage would report a collection failure where the original
+                    # run had a result.
+                    self._count(f"status_{resp.status_code}")
+                    self.evidence.store(key_url, resp.status_code, None,
+                                        dict(resp.headers))
+                    resp.raise_for_status()
 
                 resp.raise_for_status()
                 body = resp.json() if expect_json else resp.text
