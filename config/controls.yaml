@@ -1,0 +1,46 @@
+# Control roles for the evaluation chapter, consumed by
+# `python tools/aggregate_runs.py --roles config/controls.yaml`.
+#
+# The key is the run directory name under out/ (or the target legal name, or the
+# run id - the first that matches wins). The value is the role the run plays in
+# the evaluation argument. Roles are emitted in this order:
+#
+#   positive_technical   a domain with real CT volume and known exposure:
+#                        if the chain produces nothing, the pillar is broken
+#   positive_corporate   a legal name that is certainly listed (with its LEI in
+#                        the target file, so `sanctions_match_exact` is
+#                        reachable and the `strong` path is exercised at all)
+#   positive_incident    a victim taken from ransomware.live /v2/recentvictims,
+#                        therefore certainly inside the 12-month window
+#   negative             a mature vendor: if the layer fires everywhere here,
+#                        the false-positive rate is the finding
+#   null_control         an invented legal name and a non-existent domain:
+#                        everything must come back NOT_OBSERVABLE, which is how
+#                        the layer shows it does not manufacture signal
+#
+# Keep the real names here and pass --pseudonymise when generating the tables
+# for the thesis: the mapping is printed to stderr and never written to the file.
+
+# Le chiavi sono i nomi delle cartelle sotto out/, cioe' <slug>-<run-id>.
+# Se non sei sicuro dello slug, elencale con:  dir out /b
+
+airspan-airspan:   negative
+amdocs-amdocs:     negative
+athonet-s-r-l-athonet: negative
+ericsson-ericsson: negative
+italtel-italtel:   negative
+mavenir-mavenir:   negative
+nokia-nokia:       negative
+sirti-sirti:       negative
+
+huawei-huawei:     positive_corporate
+zte-zte:           positive_corporate
+
+# Non e' un fornitore 5G: e' il controllo positivo del pilastro tecnico, scelto
+# perche' ha una superficie certificata ampia e vulnerabilita' note. Va
+# etichettato, altrimenti nelle tabelle compare in mezzo ai fornitori.
+sapienza-sapienza: positive_technical
+
+# Da aggiungere quando le avrai lanciate:
+# victim-01:      positive_incident
+# nullcontrol-01: null_control

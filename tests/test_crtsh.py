@@ -155,3 +155,21 @@ def test_both_interfaces_yield_the_same_inventory(target):
     inv_a = next(f for f in a if f.type == "subdomain_observed")
     inv_b = next(f for f in b if f.type == "subdomain_observed")
     assert inv_a.evidence["hosts_observed"] == inv_b.evidence["hosts_observed"] == 10
+
+
+def test_expired_certificates_are_not_handed_to_the_resolver():
+    """CT is append-only, so an unfiltered query returns the whole issuance
+    history. Without the horizon the resolver received names drawn from
+    certificates that expired years ago, and `hosts_observed` and
+    `hosts_for_dns` described different populations."""
+    col = CrtShCollector(client=None, config=Config.load(), horizon="2026-01-01")
+    raw = Raw(source=Source.CRTSH, kind="certificate_entries", subject="example.com",
+              payload={"query": "%.example.com", "entries": [
+                  {"common_name": "live.example.com", "name_value": "live.example.com",
+                   "not_before": "2025-06-01", "not_after": "2026-06-01"},
+                  {"common_name": "gone.example.com", "name_value": "gone.example.com",
+                   "not_before": "2019-01-01", "not_after": "2020-01-01"},
+              ]})
+    target = Target(legal_name="Example", domains=["example.com"])
+    assert col.resolvable_hosts([raw], target) == ["live.example.com"]
+    assert {f.type for f in col.analyze([raw], target)} == {"subdomain_observed"}

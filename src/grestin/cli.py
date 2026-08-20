@@ -89,6 +89,22 @@ def _why(stage: dict) -> str:
 def run(args: argparse.Namespace) -> int:
     config = Config.load(args.config_dir)
     target = load_target(args.target)
+
+    # Checked before a single request goes out. The workbook is only touched at
+    # the very end of the run, so a mistyped path used to surface after several
+    # minutes of collection, with the traceback landing on shutil.copyfile and
+    # saying nothing useful about what was actually wrong.
+    template = args.tool or args.prefill
+    if template and not Path(template).is_file():
+        print(f"workbook template not found: {template!r}", file=sys.stderr)
+        if "\t" in str(template) or "\n" in str(template) or "\r" in str(template):
+            print("  the path contains a control character, which usually means "
+                  "a Windows path was quoted in .env: a double-quoted value has "
+                  "its backslash escapes expanded, so tool\\tprm_tool.xlsx "
+                  "became a tab. Use forward slashes (tool/tprm_tool.xlsx) or "
+                  "leave the value unquoted.", file=sys.stderr)
+        return 2
+
     run_id = args.run_id or time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     stats = RunStats(run_id=run_id, target=target.legal_name)
     out_dir = Path(args.out) / f"{target.slug}-{run_id}"
@@ -193,7 +209,6 @@ def run(args: argparse.Namespace) -> int:
     summary = score(findings, config)
 
     # One master template, one persistent working copy per third party.
-    template = args.tool or args.prefill
     workbook: Path | None = None
     if template:
         workbook = working_copy(template, args.tool_dir, target.slug, config,

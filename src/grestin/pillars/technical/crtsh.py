@@ -84,6 +84,12 @@ class CrtShCollector(BaseCollector):
     def collect(self, target: Target) -> list[Raw]:
         raws: list[Raw] = []
         for domain in target.domains:
+            #: Cert Spotter is queried with include_subdomains, so once it has
+            #: answered for this domain it already covers the apex. A later
+            #: failure of the apex query then costs no observation, and
+            #: recording it as an error would mark the stage degraded over data
+            #: the run actually holds.
+            covered_by_certspotter = False
             for q in (f"%.{domain}", domain):
                 encoded = quote(q, safe="")
                 body = ev = None
@@ -103,13 +109,23 @@ class CrtShCollector(BaseCollector):
                             CERTSPOTTER.format(domain=domain))
                         body = self._from_certspotter(issuances)
                         self.bump("certspotter_fallback")
-                        if self.stats is not None:
-                            self.stats.errors.append(
-                                f"crtsh {q}: unavailable, Cert Spotter used instead")
+                        covered_by_certspotter = True
+                        # A recovered query is not an error. crt.sh answers 502
+                        # under load often enough that treating every successful
+                        # fallback as a fault would leave every run degraded,
+                        # and an integrity flag that is always raised carries no
+                        # information. The counter records which interface was
+                        # used; the run stays clean because no observation was
+                        # lost.
                     except Exception as exc:           # noqa: BLE001
                         last = exc
                 if ev is None:
                     self.bump("query_errors")
+                    if covered_by_certspotter:
+                        # The apex names are inside the Cert Spotter answer
+                        # already obtained for this domain.
+                        self.bump("queries_covered_by_fallback")
+                        continue
                     if self.stats is not None:
                         self.stats.errors.append(
                             f"crtsh {q}: {type(last).__name__}: {last} "
@@ -242,10 +258,21 @@ class CrtShCollector(BaseCollector):
     # -- handoff to stage 2 ------------------------------------------------
     def resolvable_hosts(self, raws: Sequence[Raw], target: Target) -> list[str]:
         """Deduplicated, wildcard-free host list for dns.py. Sensitive hosts
-        first, so a rate-limited run still covers what matters."""
+        first, so a rate-limited run still covers what matters.
+
+        The expiry horizon applied in `analyze` is applied here too. Certificate
+        Transparency is append-only, so the unfiltered query returns the whole
+        issuance history of a domain: without the filter this method handed the
+        resolver names drawn from certificates that expired years ago, which is
+        why the two counters could diverge by an order of magnitude and why the
+        stage spent minutes resolving hosts that no longer exist. Both counts
+        now describe the same population.
+        """
         hosts: set[str] = set()
         for raw in raws:
             for entry in raw.payload.get("entries", []):
+                if entry.get("not_after") and str(entry["not_after"]) < self.horizon:
+                    continue
                 for host in self._hostnames(entry):
                     if host.startswith("*.") or "*" in host:
                         continue
