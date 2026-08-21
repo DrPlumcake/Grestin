@@ -254,3 +254,16 @@ def test_unusable_domain_is_dropped_with_a_warning():
     t = Target(legal_name="X", domains=["localhost", "acme.example"])
     assert t.domains == ["acme.example"]
     assert any("not a usable domain" in w for w in t.domain_warnings)
+
+
+def test_a_directory_of_targets_expands_to_its_yaml_files(tmp_path):
+    """`--target config/targets` runs every supplier in turn. Files starting
+    with an underscore are skipped: that is the convention for a template kept
+    beside the real targets, and running it would produce a run directory for a
+    supplier that does not exist."""
+    from grestin.cli import _target_files
+
+    for name in ("nokia.yaml", "airspan.yaml", "_template.yaml", "notes.md"):
+        (tmp_path / name).write_text("legal_name: x\n", encoding="utf-8")
+    assert [p.name for p in _target_files(str(tmp_path))] == ["airspan.yaml", "nokia.yaml"]
+    assert _target_files(str(tmp_path / "nokia.yaml"))[0].name == "nokia.yaml"

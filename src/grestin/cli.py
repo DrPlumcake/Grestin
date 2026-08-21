@@ -107,7 +107,7 @@ def _stage_note(name: str, target, handoff: list[str]) -> str:
         "ransomware_live": f"searching leak-site listings for {target.legal_name!r}",
     }.get(name, "running")
 
-def run(args: argparse.Namespace) -> int:
+def run_one(args: argparse.Namespace) -> int:
     config = Config.load(args.config_dir)
     target = load_target(args.target)
 
@@ -315,7 +315,94 @@ def run(args: argparse.Namespace) -> int:
     print(f"Declared {projection['declared_score']:.0%} ({projection['declared_level']}) -> "
           f"projected {projection['projected_score']:.0%} ({projection['projected_level']})")
     print(f"Output: {out_dir}")
+    #: Read back by the batch runner for its closing table. A run that
+    #: completed as a process can still be an unusable collection, and a batch
+    #: of eleven is exactly where that distinction gets lost.
+    args.last_run = {"integrity": stats.integrity, "findings": len(findings),
+                     "suggest_yes": len(summary.suggest_yes), "out_dir": str(out_dir)}
     return 0
+
+
+
+def _target_files(spec: str) -> list[Path]:
+    """The target files a --target argument stands for.
+
+    A file is itself; a directory is every `*.yaml` inside it, sorted, minus
+    the ones whose name starts with an underscore, which is the convention for
+    a template kept alongside the real targets. A glob is expanded by the
+    shell on Unix and by us on Windows, where PowerShell does not expand it.
+    """
+    path = Path(spec)
+    if path.is_dir():
+        return sorted(p for p in path.glob("*.yaml") if not p.name.startswith("_"))
+    if any(ch in spec for ch in "*?["):
+        parent = path.parent if str(path.parent) != "" else Path(".")
+        return sorted(parent.glob(path.name))
+    return [path]
+
+
+def run(args: argparse.Namespace) -> int:
+    """One target, or every target in a directory, one after the other.
+
+    A batch keeps going after a target fails. Stopping on the first error would
+    mean that an unreachable interface on the third supplier costs the seven
+    that follow, and those seven are not affected by it. The exit status is
+    non-zero if any target failed, and the closing table says which.
+    """
+    targets = _target_files(args.target)
+    if not targets:
+        print(f"no target file matched {args.target!r}", file=sys.stderr)
+        return 2
+    if len(targets) == 1:
+        return run_one(args)
+
+    base_run_id = args.run_id
+    outcomes: list[tuple[str, str]] = []
+    print(f"{len(targets)} target(s) to process\n", file=sys.stderr)
+
+    for n, path in enumerate(targets, start=1):
+        # Each target gets its own run id, defaulting to the file name, so the
+        # output directories stay one per supplier and a re-run overwrites the
+        # right one instead of accumulating copies.
+        args.target = str(path)
+        args.run_id = f"{base_run_id}-{path.stem}" if base_run_id else path.stem
+        print(f"\n=== [{n}/{len(targets)}] {path.stem} " + "=" * 30, file=sys.stderr)
+        args.last_run = None
+        try:
+            code = run_one(args)
+            last = getattr(args, "last_run", None) or {}
+            if code != 0:
+                outcomes.append((path.stem, f"exit {code}"))
+            else:
+                outcomes.append((path.stem,
+                                 f"{last.get('integrity', '?')}, "
+                                 f"{last.get('findings', 0)} finding(s), "
+                                 f"{last.get('suggest_yes', 0)} SUGGEST_YES"))
+        except KeyboardInterrupt:
+            outcomes.append((path.stem, "interrupted"))
+            print("\ninterrupted; stopping the batch", file=sys.stderr)
+            break
+        except Exception as exc:                     # noqa: BLE001 - reported, not fatal
+            outcomes.append((path.stem, f"{type(exc).__name__}: {exc}"))
+            print(f"  [fail] {path.stem}: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    width = max(len(name) for name, _ in outcomes)
+    print("\n=== batch summary " + "=" * 30)
+    for name, status in outcomes:
+        print(f"  {name.ljust(width)}  {status}")
+    unusable = [n for n, st in outcomes if not st.startswith("complete")]
+    if unusable:
+        print(f"\n{len(unusable)} of {len(outcomes)} target(s) are not a complete "
+              f"collection: {', '.join(unusable)}\n"
+              "Their findings say nothing about the third party until re-run.",
+              file=sys.stderr)
+    #: Non-zero only when a target could not be processed at all. A degraded or
+    #: invalid collection is a reported outcome, not a failure of the command,
+    #: and making the batch exit non-zero for it would train the operator to
+    #: ignore the exit status.
+    crashed = [n for n, st in outcomes
+               if st.startswith(("exit", "interrupted")) or "Error" in st]
+    return 1 if crashed else 0
 
 
 def guard(args: argparse.Namespace) -> int:
@@ -350,14 +437,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--config-dir", default=str(Path(__file__).resolve().parents[2] / "config"))
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    r = sub.add_parser("run", help="run the pillars against one target")
-    r.add_argument("--target", required=True)
+    r = sub.add_parser("run", help="run the pillars against one target, or a whole directory")
+    r.add_argument("--target", required=True,
+                   help="a target YAML, a directory of them, or a glob. A directory "
+                        "runs every *.yaml inside it in turn, each into its own run id")
     r.add_argument("--declared", help="YAML of the answers already given in the tool")
     r.add_argument("--offline", action="store_true", help="replay from the evidence store only")
     r.add_argument("--retries", type=int, default=3,
                    help="HTTP retries per request; raise to 5 or 6 when crt.sh is "
                         "returning 502 (default 3)")
-    r.add_argument("--run-id", help="reuse a previous run id (with --offline)")
+    r.add_argument("--run-id",
+                   help="reuse a previous run id (with --offline). On a directory it "
+                        "becomes a prefix and each target gets <run-id>-<file stem>; "
+                        "omit it and the file stem alone is the run id")
     r.add_argument("--evidence", default="evidence")
     r.add_argument("--out", default="out")
     r.add_argument("--tool", default=os.environ.get("TPRM_TOOL_XLSX"),
